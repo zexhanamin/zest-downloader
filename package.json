@@ -1,0 +1,179 @@
+{
+  "name": "zest-downloader",
+  "version": "1.0.0",
+  "description": "A modern, cross-platform download manager with HTTP chunked downloading and torrent support",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "test": "node test/downloader.test.js && node test/queue.test.js && node test/displayname.test.js && node test/capture.test.js",
+    "build": "electron-builder build",
+    "build:win": "electron-builder build --win",
+    "build:mac": "electron-builder build --mac",
+    "build:linux": "electron-builder build --linux",
+    "pack": "electron-builder --dir",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "download-manager",
+    "torrent",
+    "electron",
+    "webtorrent"
+  ],
+  "author": "zexhanamin",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "electron-dl": "^3.5.2",
+    "fs-extra": "^11.2.0",
+    "mime-types": "^2.1.35",
+    "node-fetch": "^3.3.2",
+    "webtorrent": "^2.1.35",
+    "sql.js": "^1.12.0",
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "eslint": "^9.5.0"
+  },
+  "build": {
+    "appId": "com.zestdownloader.app",
+    "productName": "Zest Downloader",
+    "copyright": "Copyright © 2025 Zest Downloader",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "src/**/*",
+      "assets/**/*",
+      "!assets/*.icns",
+      "!node_modules/**/{test,tests,spec,specs}",
+      "!node_modules/.cache",
+      "extension/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Zest Downloader",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "perMachine": true,
+      "installerLanguages": [
+        "en_US"
+      ],
+      "include": "build/installer.nsh"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "category": "public.app-category.utilities",
+      "darkModeSupport": true
+    },
+    "dmg": {
+      "title": "Zest Downloader",
+      "iconSize": 80,
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "category": "Network",
+      "description": "Modern download manager with torrent support",
+      "desktop": {
+        "Name": "Zest Downloader",
+        "Comment": "Download manager with torrent support",
+        "Categories": "Network;FileTransfer;"
+      }
+    },
+    "extraResources": [
+      {
+        "from": "extension/",
+        "to": "extension/",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "zexhanamin",
+        "repo": "zest-downloader"
+      }
+    ]
+  }
+}
