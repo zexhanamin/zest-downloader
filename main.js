@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Tray, nativeImage, safeStorage } = require('electron');
 const path    = require('path');
 const fs      = require('fs-extra');
 const http    = require('http');
@@ -7,6 +7,7 @@ const { config }              = require('./src/config');
 const { Downloader, sanitizeFilename } = require('./src/downloader');
 const { queue, STATUS }       = require('./src/queue');
 const { torrentEngine }       = require('./src/torrent');
+const media                   = require('./src/media');
 const { openBrowserWithExtension } = require('./src/extension-installer');
 const { initUpdater, checkForUpdates, installUpdate } = require('./src/updater');
 
@@ -14,10 +15,23 @@ const { initUpdater, checkForUpdates, installUpdate } = require('./src/updater')
 //  Constants
 // ─────────────────────────────────────────────
 const IS_DEV      = process.argv.includes('--dev');
+/** Launched by the OS at login — come up in the tray, not in the user's face */
+const STARTED_HIDDEN = process.argv.includes('--hidden');
 const DEFAULT_DIR = config.downloadDir || app.getPath('downloads');
 const ICON_PATH   = path.join(__dirname, 'assets', 'icon.png');
 const ICO_PATH    = path.join(__dirname, 'assets', 'icon.ico');
-const EXT_DIR     = path.join(__dirname, 'extension');
+/**
+ * The unpacked extension folder.
+ *
+ * Packaged, __dirname points inside app.asar — an archive file, not a
+ * directory. Chrome cannot load an extension from there and Explorer cannot
+ * open it, so both "Open folder" and "Launch test browser" fail on every
+ * installed copy while working fine from source. The real files are shipped
+ * alongside the archive by the extraResources rule in package.json.
+ */
+const EXT_DIR = app.isPackaged
+  ? path.join(process.resourcesPath, 'extension')
+  : path.join(__dirname, 'extension');
 
 /** How many transfers run at once — the rest wait in the queue */
 const MAX_CONCURRENT = config.maxConcurrent;
@@ -41,15 +55,57 @@ let isQuitting = false;
 /** Active HTTP downloaders  { jobId: Downloader } */
 const activeDownloaders = new Map();
 
-/**
- * Session cookies handed over by the browser extension, keyed by job id.
- *
- * Deliberately memory-only: these are live credentials, and the queue
- * database is a plain file. The cost is that resuming after an app restart
- * loses the session — the download then fails with the site's own error,
- * which is honest, rather than saving a login page as if it were the file.
- */
+/** Active yt-dlp jobs  { jobId: MediaDownload } */
+const activeMedia = new Map();
+
+/** Session cookies for the current run, keyed by job id */
 const jobCookies = new Map();
+
+/**
+ * Session cookies are live credentials, so they are never written to the
+ * queue database in the clear. safeStorage encrypts them with the OS keystore
+ * — DPAPI on Windows, Keychain on macOS, libsecret on Linux — which ties them
+ * to this user account on this machine, the same way a browser stores its own
+ * cookie jar. Where the OS offers no keystore, they simply stay in memory and
+ * a resume after restart fails rather than silently downgrading to plaintext.
+ */
+function encryptionAvailable() {
+  try { return safeStorage.isEncryptionAvailable(); } catch (_) { return false; }
+}
+
+function rememberCookie(id, cookie) {
+  if (!cookie) return;
+  jobCookies.set(id, cookie);
+  if (!encryptionAvailable()) return;
+  try {
+    queue.setCookie(id, safeStorage.encryptString(cookie).toString('base64'));
+  } catch (e) {
+    console.warn('[Cookies] Could not store credentials for', id, '-', e.message);
+  }
+}
+
+/** Cookie for a job: this run's copy first, else the encrypted one on disk */
+function cookieFor(id) {
+  const live = jobCookies.get(id);
+  if (live) return live;
+  if (!encryptionAvailable()) return '';
+  try {
+    const row = queue.get(id);
+    if (!row?.cookie_enc) return '';
+    const plain = safeStorage.decryptString(Buffer.from(row.cookie_enc, 'base64'));
+    jobCookies.set(id, plain);
+    return plain;
+  } catch (_) {
+    // Written by a different user or machine — treat it as absent
+    return '';
+  }
+}
+
+/** Wipe credentials the moment a job no longer needs them */
+function forgetCookie(id) {
+  jobCookies.delete(id);
+  try { queue.clearCookie(id); } catch (_) {}
+}
 
 // ─────────────────────────────────────────────
 //  URL / path helpers
@@ -103,9 +159,25 @@ function decodeFilename(name = '') {
   try { return decodeURIComponent(name); } catch (_) { return name; }
 }
 
+/**
+ * What is left of a name once everything a plain-ASCII console cannot print
+ * has gone. Two names that share a skeleton are the same file seen through
+ * different amounts of damage.
+ */
+function asciiSkeleton(name = '') {
+  return String(name)
+    .replace(/[^\x20-\x7e]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 /** Resolve on-disk path for a queue job (tries decoded + raw filename) */
 async function resolveJobFilePath(job) {
   if (!job?.save_path) return null;
+
+  // What the engine actually wrote beats anything reconstructed from parts
+  if (job.file_path && await fs.pathExists(job.file_path)) return job.file_path;
 
   const candidates = [];
   const add = (name) => {
@@ -136,6 +208,18 @@ async function resolveJobFilePath(job) {
   for (const p of candidates) {
     if (await fs.pathExists(p)) return p;
   }
+
+  // Last resort, for names that reached the queue through something lossy.
+  // Downloads recorded before this was fixed have the emoji and the Arabic
+  // stripped out of them; the file is right there under its real name, so
+  // compare the two with everything unprintable taken off both sides.
+  const wanted = asciiSkeleton(decodeFilename(job.filename));
+  if (wanted) {
+    const entries = await fs.readdir(job.save_path).catch(() => []);
+    const hit = entries.find(e => asciiSkeleton(e) === wanted);
+    if (hit) return path.join(job.save_path, hit);
+  }
+
   return candidates[0] || null;
 }
 
@@ -174,7 +258,12 @@ function createWindow() {
   mainWindow.loadFile('index.html');
 
   // Show only when fully rendered — avoids white flash
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    // A login-launched instance belongs in the tray. Popping a window in
+    // front of someone who just reached their desktop is what makes
+    // start-with-Windows apps worth uninstalling.
+    if (!STARTED_HIDDEN) mainWindow.show();
+  });
 
   // Open DevTools in dev mode
   if (IS_DEV) mainWindow.webContents.openDevTools();
@@ -198,12 +287,155 @@ function createWindow() {
 }
 
 // ─────────────────────────────────────────────
+//  Progress popup
+//
+//  A capture used to raise the whole app over
+//  whatever you were doing. This is the small
+//  corner window instead: it says what is being
+//  fetched and gets out of the way when done.
+// ─────────────────────────────────────────────
+
+/** @type {BrowserWindow|null} */
+let popupWindow = null;
+
+/** The job the popup is currently following */
+let popupJobId = null;
+
+function createPopup() {
+  if (popupWindow && !popupWindow.isDestroyed()) return popupWindow;
+
+  const { screen } = require('electron');
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  const W = 360;
+  const H = 168;
+
+  popupWindow = new BrowserWindow({
+    width: W,
+    height: H,
+    x: width - W - 18,
+    y: height - H - 18,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    // Out of the taskbar and above other windows: this is a notification,
+    // not a second app to keep track of.
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    // Never steal typing focus — the user is mid-sentence somewhere else
+    focusable: false,
+    show: false,
+    backgroundColor: '#18181C',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+
+  popupWindow.loadFile('popup.html');
+  popupWindow.on('closed', () => { popupWindow = null; popupJobId = null; });
+  return popupWindow;
+}
+
+function popupSend(channel, payload) {
+  if (popupWindow && !popupWindow.isDestroyed()) {
+    popupWindow.webContents.send(channel, payload);
+  }
+}
+
+/** Bring the popup up for a job, creating it the first time */
+function showPopupFor(id) {
+  popupJobId = id;
+  const win = createPopup();
+  const paint = () => {
+    if (win.isDestroyed()) return;
+    // Show first: pushes are skipped while the window is hidden, so
+    // painting before showing left the previous job on screen.
+    if (!win.isVisible()) win.showInactive();
+    pushPopupJob(id);
+  };
+  if (win.webContents.isLoading()) win.webContents.once('did-finish-load', paint);
+  else paint();
+}
+
+/**
+ * Send the popup the current shape of the job it is following.
+ *
+ * `live` carries the in-flight numbers, which are fresher than the queue row:
+ * progress is written to the database lazily so the disk is not thrashed.
+ */
+let popupLastPush = 0;
+
+function pushPopupJob(id, live = null) {
+  if (!popupWindow || popupWindow.isDestroyed()) return;
+  if (popupJobId !== id) return;
+  // Nothing to paint on a window nobody can see
+  if (!popupWindow.isVisible()) return;
+
+  // Progress fires many times a second and each push costs two database
+  // reads. The eye cannot use more than a few updates a second anyway, so
+  // throttle them — but never drop a terminal state, which arrives once.
+  const now = Date.now();
+  const terminal = !live;
+  if (!terminal && now - popupLastPush < 250) return;
+  popupLastPush = now;
+
+  const job = queue.get(id);
+  if (!job) return;
+
+  popupSend('popup:job', {
+    id,
+    name:        job.filename || job.url,
+    status:      job.status,
+    downloaded:  live?.downloadedBytes ?? job.downloaded,
+    total_bytes: live?.totalBytes ?? job.total_bytes,
+    speed:       live?.speed ?? job.speed,
+    eta:         live?.eta ?? job.eta,
+    error_msg:   job.error_msg,
+    item:        live?.item ?? 0,
+    itemCount:   live?.itemCount ?? 0,
+  });
+
+  try {
+    const stats = queue.stats();
+    const waiting = (stats.queued || 0) + Math.max(0, (stats.downloading || 0) - 1);
+    popupSend('popup:queued', { waiting });
+  } catch (_) {}
+}
+
+// ─────────────────────────────────────────────
 //  System Tray
 // ─────────────────────────────────────────────
 
 function quitApp() {
   isQuitting = true;
   app.quit();
+}
+
+/**
+ * Register (or clear) the Windows login item.
+ *
+ * The browser extension can only hand a download over while Zest is
+ * listening, so an app that is not running is an app that silently does
+ * nothing. It starts hidden in the tray, and `startAtLogin: false` in
+ * zest-config.json turns it off.
+ *
+ * Only when packaged: pointing a login item at a dev electron.exe would
+ * launch the wrong thing on every boot.
+ */
+function applyLoginItem() {
+  if (!app.isPackaged) return;
+  const openAtLogin = config.get('startAtLogin', true) !== false;
+  try {
+    const current = app.getLoginItemSettings();
+    if (current.openAtLogin === openAtLogin) return;
+    app.setLoginItemSettings({ openAtLogin, args: ['--hidden'] });
+    console.log(`[Startup] Start with Windows: ${openAtLogin ? 'on' : 'off'}`);
+  } catch (err) {
+    console.warn('[Startup] Could not update the login item:', err.message);
+  }
 }
 
 function createTray() {
@@ -257,9 +489,11 @@ function pumpQueue() {
       queue.setDownloading(job.id);
       if (job.type === 'torrent') {
         startTorrentDownload(job.id, job.url, job.save_path, null);
+      } else if (job.type === 'media') {
+        startMediaDownload(job.id, job.url, job.save_path, job.quality);
       } else {
         startHttpDownload(job.id, job.url, job.save_path, job.referrer, job.filename,
-                          jobCookies.get(job.id) || '');
+                          cookieFor(job.id));
       }
     }
   } catch (e) {
@@ -268,9 +502,10 @@ function pumpQueue() {
 }
 
 /** Queue a job and let the scheduler decide when it actually starts */
-function enqueue({ url, savePath, type = 'http', referrer = '', filename = null, cookie = '' }) {
-  const id = queue.add({ url, savePath, type, referrer, filename });
-  if (cookie) jobCookies.set(id, cookie);
+function enqueue({ url, savePath, type = 'http', referrer = '', filename = null,
+                  cookie = '', quality = '' }) {
+  const id = queue.add({ url, savePath, type, referrer, filename, quality });
+  rememberCookie(id, cookie);
   pumpQueue();
   return id;
 }
@@ -304,14 +539,17 @@ function startHttpDownload(id, url, savePath, referrer = '', filename = null, co
       eta:        p.eta,
     });
     send('download:progress', p);
+    pushPopupJob(id, p);
   });
 
   dl.on('merging', () => send('download:merging', { id }));
 
   dl.on('done', (info) => {
-    queue.setDone(id, info.filename, info.totalBytes);
+    queue.setDone(id, info.filename, info.totalBytes, info.path);
     activeDownloaders.delete(id);
+    forgetCookie(id);
     send('download:done', { ...info, id });
+    pushPopupJob(id);
     pumpQueue();
   });
 
@@ -326,6 +564,68 @@ function startHttpDownload(id, url, savePath, referrer = '', filename = null, co
     queue.setError(id, err.message);
     activeDownloaders.delete(id);
     send('download:error', { id, message: err.message });
+    pushPopupJob(id);
+    pumpQueue();
+  });
+
+  dl.start();
+  queue.setDownloading(id);
+}
+
+// ─────────────────────────────────────────────
+//  Media (yt-dlp) handlers
+// ─────────────────────────────────────────────
+
+function startMediaDownload(id, url, savePath, quality) {
+  if (activeMedia.has(id)) return;
+
+  const [pickedQuality, mode] = String(quality || 'best').split('|');
+  const dl = new media.MediaDownload({
+    url, savePath, id,
+    quality:  pickedQuality || 'best',
+    playlist: mode === 'playlist',
+    cookie:   cookieFor(id),
+  });
+  activeMedia.set(id, dl);
+
+  dl.on('meta', (meta) => {
+    queue.updateProgress(id, {
+      downloaded: 0,
+      totalBytes: meta.totalBytes,
+      speed:      '0 B/s',
+      eta:        null,
+      filename:   meta.filename,
+    });
+    send('media:meta', meta);
+  });
+
+  dl.on('progress', (p) => {
+    queue.updateProgress(id, {
+      downloaded: p.downloadedBytes,
+      totalBytes: p.totalBytes,
+      speed:      p.speed,
+      eta:        p.eta,
+    });
+    send('download:progress', p);
+    pushPopupJob(id, p);   // the list renders media like any transfer
+  });
+
+  dl.on('done', (info) => {
+    // info.path is where yt-dlp actually put it, which is the only thing
+    // Open can trust: a playlist entry lands in a subfolder, and yt-dlp's
+    // own sanitising of a title never matches ours character for character.
+    queue.setDone(id, info.filename, info.totalBytes, info.path || null);
+    activeMedia.delete(id);
+    send('download:done', { ...info, id });
+    pushPopupJob(id);
+    pumpQueue();
+  });
+
+  dl.on('error', (err) => {
+    queue.setError(id, err.message);
+    activeMedia.delete(id);
+    send('download:error', { id, message: err.message });
+    pushPopupJob(id);
     pumpQueue();
   });
 
@@ -362,7 +662,7 @@ function startTorrentDownload(id, source, savePath, selectFiles) {
   });
 
   dl.on('done', (info) => {
-    queue.setDone(id, info.name, info.totalBytes ?? null);
+    queue.setDone(id, info.name, info.totalBytes ?? null, info.path || null);
     send('torrent:done', { ...info, id });
     pumpQueue();   // seeding no longer occupies a download slot
   });
@@ -389,12 +689,169 @@ ipcMain.handle('download:add', async (_e, { url, savePath }) => {
   if (!isValidDownloadUrl(url)) {
     return { error: 'That does not look like a valid http(s) or magnet link' };
   }
+  // A YouTube or TikTok page is not a file — say so instead of saving the HTML
+  const site = media.mediaSiteFor(url);
+  if (site) {
+    return {
+      error: `${site} links are videos, not files — use the Video tab`,
+      media: true, site,
+    };
+  }
   const dir = savePath || DEFAULT_DIR;
   const id  = enqueue({ url, savePath: dir, type: 'http' });
   return { id };
 });
 
+// ─────────────────────────────────────────────
+//  IPC — Video downloads (yt-dlp)
+// ─────────────────────────────────────────────
+
+// ── Keeping yt-dlp current ───────────────────
+//
+// The sites change how they serve video every few weeks, and a yt-dlp from
+// two months ago stops working on them. Left alone that shows up as videos
+// that used to download and now fail for no reason anybody can see, so the
+// app replaces its own copy in the background instead of waiting to be asked.
+
+let helperCheckTimer = null;
+
+/**
+ * @param {boolean} [opts.force] check now, whatever the setting and the clock say
+ */
+async function checkHelperUpdate({ force = false } = {}) {
+  // Windows locks a running executable, so swapping yt-dlp out from under a
+  // video that is downloading would fail on the move — that refusal holds
+  // even when the user pressed the button, which is why it is not forced past.
+  const verdict = media.shouldCheckForUpdate({
+    enabled:   force || config.get('autoUpdateHelper', true) !== false,
+    installed: await media.isInstalled(),
+    busy:      activeMedia.size > 0,
+    checkedAt: force ? 0 : (config.get('helperCheckedAt', 0) || 0),
+  });
+  if (!verdict.check) return { updated: false, reason: verdict.reason };
+
+  try {
+    const res = await media.updateYtDlp();
+    // A check that never reached GitHub has not happened, so it must not
+    // reset the clock — otherwise one offline morning costs a whole day.
+    if (res.reason !== 'unreachable') config.set('helperCheckedAt', Date.now());
+    if (res.updated) {
+      console.log(`[Media] yt-dlp updated ${res.from || '?'} → ${res.current}`);
+      send('media:helperUpdated', { version: res.current, from: res.from || null });
+    }
+    return res;
+  } catch (err) {
+    console.warn('[Media] Helper update failed:', err.message);
+    return { updated: false, reason: 'failed', error: err.message };
+  }
+}
+
+/** Check shortly after launch, then once a day for as long as the app is up */
+function startHelperUpdates() {
+  const tick = async () => {
+    const res = await checkHelperUpdate();
+    const next = res.reason === 'busy' ? media.UPDATE_RETRY_BUSY : media.UPDATE_CHECK_EVERY;
+    helperCheckTimer = setTimeout(tick, next);
+    helperCheckTimer.unref?.();
+  };
+  // Let the window paint and the queue settle before spending any bandwidth
+  helperCheckTimer = setTimeout(tick, 20000);
+  helperCheckTimer.unref?.();
+}
+
+/** Is this link one the video engine handles? */
+ipcMain.handle('media:check', (_e, { url }) => ({ site: media.mediaSiteFor(url) }));
+
+/** Check for a newer yt-dlp right now, from the button in the Video tab */
+ipcMain.handle('media:updateHelper', async () => checkHelperUpdate({ force: true }));
+
+/** Whether the yt-dlp helper is present, and which sites are supported */
+ipcMain.handle('media:helperStatus', async () => ({
+  installed: await media.isInstalled(),
+  version:   (await media.isInstalled()) ? await media.installedVersion() : null,
+  ffmpeg:    await media.hasFfmpeg(),
+  runtime:   await media.jsRuntime(),
+  sites:     media.MEDIA_HOSTS.map(h => h.name),
+  path:      media.ytDlpPath(),
+  autoUpdate:  config.get('autoUpdateHelper', true) !== false,
+  checkedAt:   config.get('helperCheckedAt', 0) || 0,
+}));
+
+/**
+ * Fetch and install yt-dlp.
+ *
+ * This downloads and later runs an executable, so the renderer only calls it
+ * from an explicit button with the source spelled out — never on its own.
+ */
+ipcMain.handle('media:installHelper', async () => {
+  try {
+    const version = await media.installYtDlp((received, total) => {
+      send('media:helperProgress', { received, total });
+    });
+    return { version };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+/** Fetch ffmpeg, which unlocks the resolutions that need merging */
+ipcMain.handle('media:installFfmpeg', async () => {
+  try {
+    await media.installFfmpeg((received, total) => {
+      send('media:helperProgress', { received, total, what: 'ffmpeg' });
+    });
+    return { ok: true };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+/** Fetch deno, which unlocks the formats YouTube guards behind a challenge */
+ipcMain.handle('media:installRuntime', async () => {
+  try {
+    await media.installDeno((received, total) => {
+      send('media:helperProgress', { received, total, what: 'runtime' });
+    });
+    return { ok: true };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+/** Title, thumbnail and available qualities for a video page */
+ipcMain.handle('media:probe', async (_e, { url }) => {
+  if (!media.isMediaUrl(url)) return { error: 'Not a supported video link' };
+  if (!(await media.isInstalled())) return { error: 'helper-missing' };
+  try {
+    return { info: await media.probe(url) };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+ipcMain.handle('media:add', async (_e, { url, savePath, quality, playlist }) => {
+  if (!media.isMediaUrl(url)) return { error: 'Not a supported video link' };
+  if (!(await media.isInstalled())) return { error: 'helper-missing' };
+  const dir = savePath || DEFAULT_DIR;
+  // The playlist choice rides along in the quality column rather than needing
+  // a second one — it is only ever read back by startMediaDownload.
+  const id  = enqueue({
+    url, savePath: dir, type: 'media',
+    quality: `${quality || 'best'}${playlist ? '|playlist' : ''}`,
+  });
+  return { id };
+});
+
 ipcMain.handle('download:pause', (_e, { id }) => {
+  const mv = activeMedia.get(id);
+  if (mv) {
+    mv.pause();
+    activeMedia.delete(id);
+    queue.setPaused(id);
+    send('download:paused', { id });
+    pumpQueue();
+    return { ok: true };
+  }
   const dl = activeDownloaders.get(id);
   if (dl) { dl.pause(); return { ok: true }; }
   // Not running yet — take it out of the waiting list
@@ -406,7 +863,7 @@ ipcMain.handle('download:pause', (_e, { id }) => {
 ipcMain.handle('download:resume', (_e, { id }) => {
   const job = queue.get(id);
   if (!job) return { error: 'Job not found' };
-  if (activeDownloaders.has(id)) return { ok: true };
+  if (activeDownloaders.has(id) || activeMedia.has(id)) return { ok: true };
   // Back into the queue — the scheduler restarts it, and the downloader
   // picks up the bytes already on disk.
   queue.setQueued(id);
@@ -416,9 +873,12 @@ ipcMain.handle('download:resume', (_e, { id }) => {
 
 ipcMain.handle('download:cancel', async (_e, { id }) => {
   const job = queue.get(id);
+  await activeMedia.get(id)?.cancel();
+  activeMedia.delete(id);
   await activeDownloaders.get(id)?.cancel();
   activeDownloaders.delete(id);
   await dropScratch(job);
+  forgetCookie(id);
   queue.setCancelled(id);
   pumpQueue();
   return { ok: true };
@@ -427,6 +887,8 @@ ipcMain.handle('download:cancel', async (_e, { id }) => {
 ipcMain.handle('download:retry', async (_e, { id }) => {
   const job = queue.get(id);
   if (!job) return { error: 'Job not found' };
+  await activeMedia.get(id)?.cancel();
+  activeMedia.delete(id);
   await activeDownloaders.get(id)?.cancel();
   activeDownloaders.delete(id);
   await dropScratch(job);   // retry means start clean
@@ -517,19 +979,47 @@ ipcMain.handle('queue:getAll',       ()           => queue.getAll());
 ipcMain.handle('queue:get',          (_e, { id }) => queue.get(id));
 ipcMain.handle('queue:stats',        ()           => queue.stats());
 
-ipcMain.handle('queue:remove', async (_e, { id }) => {
+/**
+ * Drop a job from the list, and optionally the file it produced.
+ *
+ * Deleting the file is never the default and never implied: the list is a
+ * record of downloads, and clearing the record is not the same as throwing
+ * away what was downloaded. The caller has to ask for it explicitly.
+ */
+ipcMain.handle('queue:remove', async (_e, { id, deleteFile = false }) => {
   const job = queue.get(id);
+
+  // Resolve the path before the row goes, since that is what names the file
+  const filePath = (deleteFile && job) ? await resolveJobFilePath(job) : null;
+
+  await activeMedia.get(id)?.cancel();
+  activeMedia.delete(id);
   await activeDownloaders.get(id)?.cancel();
   activeDownloaders.delete(id);
-  await torrentEngine.remove(id, false).catch(() => {});
+  await torrentEngine.remove(id, deleteFile).catch(() => {});
   await dropScratch(job);
   jobCookies.delete(id);
   queue.remove(id);
   pumpQueue();
-  return { ok: true };
+
+  let deleted = false;
+  if (filePath && await fs.pathExists(filePath)) {
+    // Refuse to delete anything outside the folder the job saved into —
+    // a stored path should not be able to reach across the disk.
+    const within = path.resolve(filePath).startsWith(path.resolve(job.save_path));
+    if (within) {
+      try { await fs.remove(filePath); deleted = true; }
+      catch (err) { return { ok: true, deleted: false, error: err.message }; }
+    }
+  }
+  return { ok: true, deleted };
 });
 
 ipcMain.handle('queue:clearFinished', () => {
+  // Their rows are about to go, so drop any credentials still held for them
+  for (const job of queue.getAll()) {
+    if (['done', 'cancelled', 'error'].includes(job.status)) jobCookies.delete(job.id);
+  }
   queue.clearFinished();
   return { ok: true };
 });
@@ -684,6 +1174,34 @@ ipcMain.handle('app:launchBrowserWithExtension', () => {
   return ok ? { error: null } : { error: 'No supported browser found (Chrome / Edge / Brave)' };
 });
 
+// ─────────────────────────────────────────────
+//  IPC — Progress popup
+// ─────────────────────────────────────────────
+
+/** Dismiss the popup. It reappears on the next capture. */
+ipcMain.handle('popup:hide', () => {
+  if (popupWindow && !popupWindow.isDestroyed()) popupWindow.hide();
+  popupJobId = null;
+  return { ok: true };
+});
+
+/** The one place the popup may raise the full window — the user asked */
+ipcMain.handle('popup:openApp', () => {
+  if (popupWindow && !popupWindow.isDestroyed()) popupWindow.hide();
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+  return { ok: true };
+});
+
+/** Keep the popup on the same theme as the app */
+ipcMain.handle('popup:theme', (_e, { theme }) => {
+  popupSend('popup:theme', { theme });
+  return { ok: true };
+});
+
 /** Update controls */
 ipcMain.handle('update:check',   () => checkForUpdates());
 ipcMain.handle('update:install', () => installUpdate());
@@ -740,6 +1258,39 @@ function startBridgeServer() {
       return;
     }
 
+    // What qualities a video page offers, so the extension's button can
+    // ask before it downloads rather than picking for the user.
+    if (req.method === 'POST' && req.url === '/probe') {
+      let body = '';
+      let tooBig = false;
+      req.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > 64 * 1024) { tooBig = true; req.destroy(); }
+      });
+      req.on('end', async () => {
+        if (tooBig) return;
+        try {
+          const { url, cookie } = JSON.parse(body);
+          if (!media.isMediaUrl(url)) throw new Error('Not a supported video link');
+          if (!(await media.isInstalled())) {
+            throw new Error('Open Zest and set up the video helper first');
+          }
+          const info = await media.probe(url, typeof cookie === 'string' ? cookie : '');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ok: true,
+            title: info.title,
+            qualities: info.qualities,
+            playlist: info.playlist,
+          }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: e.message }));
+        }
+      });
+      return;
+    }
+
     // Add download from extension
     if (req.method === 'POST' && req.url === '/add') {
       let body = '';
@@ -748,20 +1299,31 @@ function startBridgeServer() {
         body += chunk;
         if (body.length > 64 * 1024) { tooBig = true; req.destroy(); }
       });
-      req.on('end', () => {
+      // async: deciding whether a link needs the video engine involves a
+      // filesystem check for the helper
+      req.on('end', async () => {
         if (tooBig) return;
         try {
-          const { type, url, referrer, filename, cookie } = JSON.parse(body);
+          const { type, url, referrer, filename, cookie, quality } = JSON.parse(body);
           if (!url) throw new Error('No URL');
           if (!isValidDownloadUrl(url)) throw new Error('Not a downloadable URL');
 
           const savePath = DEFAULT_DIR;
           const isTorrent = type === 'torrent' || url.startsWith('magnet:');
+          // The Download button on a video page sends the page URL, which is
+          // not a file — it needs the yt-dlp engine, not the HTTP one.
+          const isMedia = !isTorrent && (type === 'media' || media.isMediaUrl(url));
 
-          enqueue({
+          if (isMedia && !(await media.isInstalled())) {
+            throw new Error('Open Zest and set up the video helper first (Video tab)');
+          }
+
+          const newId = enqueue({
             url,
             savePath,
-            type:     isTorrent ? 'torrent' : 'http',
+            type:     isTorrent ? 'torrent' : isMedia ? 'media' : 'http',
+            // The extension's button asks the user first, so honour its choice
+            quality:  isMedia ? (typeof quality === 'string' && quality ? quality : 'best') : '',
             referrer: typeof referrer === 'string' ? referrer : '',
             cookie:   typeof cookie === 'string' ? cookie : '',
             filename: filename && filenameLooksLikeFile(filename)
@@ -769,11 +1331,8 @@ function startBridgeServer() {
               : null,
           });
 
-          // Show app window when download comes in
-          if (mainWindow) {
-            mainWindow.show();
-            mainWindow.focus();
-          }
+          // A small corner popup, not the whole app in your face
+          if (newId) showPopupFor(newId);
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
@@ -829,11 +1388,15 @@ if (!gotLock) {
 
     createWindow();
     createTray();
+    applyLoginItem();
     startBridgeServer();
 
     // Init auto-updater
     initUpdater(mainWindow, send);
     setTimeout(checkForUpdates, 5000);
+
+    // The app updates itself; so must the program it downloads videos with
+    startHelperUpdates();
 
     // Re-create window if opened from dock (macOS)
     app.on('activate', () => {
@@ -864,6 +1427,9 @@ app.on('will-quit', (e) => {
     try {
       for (const dl of activeDownloaders.values()) dl.pause();
       activeDownloaders.clear();
+      for (const mv of activeMedia.values()) mv.pause();
+      activeMedia.clear();
+      clearTimeout(helperCheckTimer);
       bridgeServer?.close();
       await torrentEngine.destroy();
       queue.close();

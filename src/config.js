@@ -45,6 +45,16 @@ function defaults() {
   return {
     // ── General ──────────────────────────────
     defaultDownloadDir: getDefaultDownloadDir(),
+    // The extension can only hand a download over while the app is
+    // listening, so Zest starts with Windows — hidden in the tray.
+    startAtLogin:       true,
+
+    // ── Video helper ─────────────────────────
+    // Sites change how they serve video every few weeks and an old yt-dlp
+    // stops working on them, so Zest keeps its own copy current rather than
+    // leaving people to work out that a second program is involved at all.
+    autoUpdateHelper:   true,
+    helperCheckedAt:    0,                 // ms epoch of the last check that got an answer
 
     // ── HTTP engine ──────────────────────────
     maxChunksPerFile:   8,                 // parallel segments per download
@@ -78,6 +88,9 @@ function defaults() {
 
 const RULES = {
   defaultDownloadDir: (v) => typeof v === 'string' && v.length > 0,
+  startAtLogin:       (v) => typeof v === 'boolean',
+  autoUpdateHelper:   (v) => typeof v === 'boolean',
+  helperCheckedAt:    (v) => Number.isInteger(v) && v >= 0,
   maxChunksPerFile:   (v) => Number.isInteger(v) && v >= 1 && v <= 64,
   maxConcurrentDl:    (v) => Number.isInteger(v) && v >= 1 && v <= 20,
   retryLimit:         (v) => Number.isInteger(v) && v >= 0 && v <= 10,

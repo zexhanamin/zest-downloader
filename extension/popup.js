@@ -173,16 +173,24 @@ async function clearHistory() {
   showToast('History cleared');
 }
 
-// ── Page magnets ─────────────────────────────
+// ── What is on this page ─────────────────────
+let pageMedia = [];
+
+/**
+ * Magnets and media are gathered by two different content scripts and stored
+ * separately, so both are checked against the tab that is actually in front —
+ * stale data from the last page is worse than an empty list.
+ */
 async function loadPageMagnets() {
-  const stored = await getStorage('page_magnets');
-  if (!stored) return;
-
-  // Only show if URL matches current tab
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || tab.url !== stored.url) return;
+  if (!tab) return;
 
-  pageMagnets = stored.magnets || [];
+  const magnets = await getStorage('page_magnets');
+  pageMagnets = (magnets && magnets.url === tab.url) ? (magnets.magnets || []) : [];
+
+  const media = await getStorage('page_media');
+  pageMedia = (media && media.url === tab.url) ? (media.media || []) : [];
+
   renderMagnets();
 }
 
@@ -192,13 +200,39 @@ function renderMagnets() {
 
   list.querySelectorAll('.magnet-item').forEach(el => el.remove());
 
-  if (pageMagnets.length === 0) {
+  if (pageMagnets.length === 0 && pageMedia.length === 0) {
     empty.classList.remove('hidden');
     return;
   }
 
   empty.classList.add('hidden');
 
+  // Videos and images the page is showing. A `page` entry is a player whose
+  // stream cannot be fetched directly — the app resolves it from the page URL.
+  pageMedia.forEach(m => {
+    const el = document.createElement('div');
+    el.className = 'magnet-item';
+    const icon = m.kind === 'video'
+      ? '<rect x="2" y="5" width="14" height="14" rx="2"/><path d="M16 10l6-3v10l-6-3z"/>'
+      : '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>';
+    el.innerHTML = `
+      <div class="magnet-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">${icon}</svg>
+      </div>
+      <span class="magnet-label" title="${esc(m.url)}">${esc(m.label || m.url)}</span>
+      <button class="magnet-send">Get</button>
+    `;
+    el.querySelector('.magnet-send').addEventListener('click', async () => {
+      const res = await msg(m.page
+        ? { type: 'CAPTURE_VIDEO', url: m.url }
+        : { type: 'CAPTURE_MEDIA_FILE', url: m.url, referrer: m.url });
+      showToast(res.ok ? '✓ Sent to Zest' : `✗ ${res.error || 'Zest not reachable'}`);
+    });
+    list.appendChild(el);
+  });
+
+  // Magnet links found on the page
   pageMagnets.forEach(m => {
     const el = document.createElement('div');
     el.className = 'magnet-item';

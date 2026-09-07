@@ -135,15 +135,17 @@ function makeServer() {
 
       if (route !== '/slow') { res.end(slice); return; }
 
-      // Trickle in 32 KB steps so a pause reliably lands mid-transfer
+      // Trickle slowly so a pause reliably lands mid-transfer. At 32 KB every
+      // 25 ms this finished in under a second and the pause test flaked on a
+      // machine that was busy doing something else.
       let off = 0;
-      const STEP = 32 * 1024;
+      const STEP = 8 * 1024;
       const tick = () => {
         if (res.writableEnded || res.destroyed) return;
         if (off >= slice.length) { res.end(); return; }
         res.write(slice.subarray(off, off + STEP));
         off += STEP;
-        setTimeout(tick, 25);
+        setTimeout(tick, 40);
       };
       tick();
       return;
@@ -259,7 +261,7 @@ async function main() {
       // Wait until real bytes have landed, then stop mid-transfer
       await new Promise((resolve) => {
         const check = setInterval(() => {
-          if (dl.downloadedBytes > 200 * 1024) { clearInterval(check); resolve(); }
+          if (dl.downloadedBytes > 32 * 1024) { clearInterval(check); resolve(); }
         }, 20);
       });
       const atPause = dl.downloadedBytes;

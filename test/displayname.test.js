@@ -163,6 +163,57 @@ function main() {
   state.activeView = 'downloads'; state.activeFilter = 'paused';
   eq('Downloads + Paused', filterJobs(jobs).map(j => j.id).join(''), 'e');
 
+  console.log('\nthe Unfinished tab');
+  // What people reach for when coming back to clean up: everything that did
+  // not make it, whatever stopped it — running, waiting, paused, failed.
+  {
+    const mixed = [
+      { id: 'a', type: 'http', status: 'downloading' },
+      { id: 'b', type: 'http', status: 'paused' },
+      { id: 'c', type: 'http', status: 'done' },
+      { id: 'd', type: 'http', status: 'error' },
+      { id: 'e', type: 'http', status: 'queued' },
+      { id: 'f', type: 'http', status: 'cancelled' },
+      { id: 'g', type: 'torrent', status: 'seeding' },
+    ];
+    state.activeView = 'downloads'; state.activeFilter = 'unfinished'; state.search = '';
+    eq('keeps everything that did not finish',
+       filterJobs(mixed).map(j => j.id).join(''), 'abdef');
+    state.activeView = 'torrents';
+    ok('a seeding torrent counts as finished',
+       !filterJobs(mixed).some(j => j.id === 'g'));
+  }
+
+  console.log('\nsearch');
+  {
+    const named = [
+      { id: 'a', type: 'http', status: 'done', filename: 'Holiday Photos.zip', url: 'https://a.com/x' },
+      { id: 'b', type: 'http', status: 'done', filename: 'invoice.pdf',        url: 'https://billing.example/inv' },
+      { id: 'c', type: 'http', status: 'done', filename: 'holiday-video.mp4',  url: 'https://cdn.example/v' },
+    ];
+    state.activeView = 'downloads'; state.activeFilter = 'all';
+
+    state.search = 'holiday';
+    eq('matches the visible name, ignoring case',
+       filterJobs(named).map(j => j.id).join(''), 'ac');
+
+    state.search = 'billing';
+    eq('matches the source url too', filterJobs(named).map(j => j.id).join(''), 'b');
+
+    state.search = '   ';
+    eq('whitespace alone is not a search', filterJobs(named).length, 3);
+
+    state.search = 'nothing here';
+    eq('no match returns nothing', filterJobs(named).length, 0);
+
+    state.search = 'PDF';
+    state.activeFilter = 'unfinished';
+    eq('search narrows within the active tab, it does not replace it',
+       filterJobs(named).length, 0);
+
+    state.search = '';
+  }
+
   state.activeView = 'downloads'; state.activeFilter = 'downloading';
   eq('Downloads + Active excludes torrents',
      filterJobs(jobs).map(j => j.id).join(''), 'a');

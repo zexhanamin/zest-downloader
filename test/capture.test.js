@@ -50,7 +50,9 @@ function loadBackground() {
     console, chrome, URL,
     setTimeout, clearTimeout, setInterval, clearInterval,
     AbortController,
-    fetch: async () => ({ ok: false, status: 0, json: async () => ({}) }),
+    // A successful hand-off: a failed one is rolled back out of the
+    // duplicate window, which would hide the behaviour under test.
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }),
   };
   sandbox.self = sandbox;
   vm.createContext(sandbox);
@@ -59,12 +61,14 @@ function loadBackground() {
   return {
     isApiLikeUrl:     sandbox.isApiLikeUrl,
     isFetchableByZest: sandbox.isFetchableByZest,
+    isFreshDownload:   sandbox.isFreshDownload,
+    capture:           sandbox.captureDownload,
     types:            vm.runInContext('DOWNLOADABLE_REQ_TYPES', sandbox),
   };
 }
 
-function main() {
-  const { isApiLikeUrl, isFetchableByZest, types } = loadBackground();
+async function main() {
+  const { isApiLikeUrl, isFetchableByZest, isFreshDownload, capture, types } = loadBackground();
 
   console.log('\nrequest types the header layer will act on');
   // The regression: Gmail sends inline images as
@@ -79,7 +83,55 @@ function main() {
   ok('xhr is not a download',         !types.has('xmlhttprequest'));
   ok('fetch is not a download',       !types.has('fetch'));
   ok('top-level navigation counts',    types.has('main_frame'));
-  ok('"other" counts',                 types.has('other'));
+  // "other" is web app manifests, beacons and prefetches. Google serves JSON
+  // endpoints with Content-Disposition: attachment to blunt XSSI, so allowing
+  // it meant every visit to Gmail downloaded its manifest.json.
+  ok('"other" is not a download',     !types.has('other'));
+  ok('objects are not downloads',     !types.has('object'));
+  ok('pings are not downloads',       !types.has('ping'));
+  ok('websockets are not downloads',  !types.has('websocket'));
+
+  console.log('\nonly downloads that are starting right now');
+  // Chrome replays onCreated for the whole download list whenever the service
+  // worker re-registers its listener. Without this guard, opening the browser
+  // grabbed every past download, cancelled it, erased it from history and
+  // re-fetched it against long-expired one-time URLs.
+  const now = new Date().toISOString();
+  const old = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+
+  ok('a download starting now is taken',
+     isFreshDownload({ state: 'in_progress', bytesReceived: 0, startTime: now }));
+  ok('a finished history entry is ignored',
+     !isFreshDownload({ state: 'complete', bytesReceived: 999, startTime: old }));
+  ok('an interrupted history entry is ignored',
+     !isFreshDownload({ state: 'interrupted', bytesReceived: 10, startTime: old }));
+  ok('a days-old entry replayed as in_progress is ignored',
+     !isFreshDownload({ state: 'in_progress', bytesReceived: 0, startTime: old }));
+  ok('a transfer already underway is ignored',
+     !isFreshDownload({ state: 'in_progress', bytesReceived: 4096, startTime: now }));
+  ok('a missing timestamp is ignored rather than guessed',
+     !isFreshDownload({ state: 'in_progress', bytesReceived: 0 }));
+  ok('a garbage timestamp is ignored',
+     !isFreshDownload({ state: 'in_progress', bytesReceived: 0, startTime: 'not-a-date' }));
+
+  console.log('\na deliberate click is never deduped');
+  // The duplicate window exists so downloads.onCreated and the header layer do
+  // not both queue one automatic capture. Applied to a button press it meant
+  // the same file could not be fetched twice, or taken at a second quality,
+  // for thirty seconds — the click simply did nothing.
+  {
+    // A zip is auto-capturable; an image deliberately is not, so it could
+    // never demonstrate the automatic path being refused.
+    const url = 'https://example.com/archive.zip';
+    const first = await capture({ url, force: true });
+    const again = await capture({ url, force: true });
+    const auto  = await capture({ url, filename: 'archive.zip' });
+
+    ok('a click is accepted', first.ok, JSON.stringify(first));
+    ok('the same click again is accepted', again.ok, JSON.stringify(again));
+    ok('an automatic repeat is still refused',
+       auto.reason === 'duplicate', JSON.stringify(auto));
+  }
 
   console.log('\nurls the app can actually fetch');
   ok('https is fetchable',   isFetchableByZest('https://x.com/a.zip'));

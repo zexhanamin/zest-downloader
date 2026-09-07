@@ -1,6 +1,6 @@
 # Zest Downloader
 
-A cross-platform download manager built with Electron. HTTP multi-chunk
+A download manager for Windows, built with Electron. HTTP multi-chunk
 downloading with real pause/resume, BitTorrent support, a dark/light UI, and a
 Chrome extension that hands downloads over from the browser.
 
@@ -28,6 +28,17 @@ Chrome extension that hands downloads over from the browser.
 - **Concurrency limit** — 4 transfers at a time by default; the rest wait.
 - **Browser extension** — Chrome/Edge/Brave (MV3). Captures download links and
   magnet links and forwards them to the app.
+- **Video downloads** — YouTube, Instagram, TikTok, X, Reddit, Facebook, Vimeo,
+  Dailymotion and Twitch. Paste a link in the Video tab, pick a quality, or use
+  the Download button the extension puts on the page.
+- **Playlists** — a YouTube playlist or channel downloads every entry into its
+  own numbered folder. A link that merely carries `?list=` offers the choice
+  rather than taking it.
+- **Search and filters** — free-text search across names and source URLs, plus
+  an Unfinished tab for everything that did not complete, whatever stopped it.
+- **Removing a download** asks whether the file should go too. Clearing the
+  entry and deleting what was downloaded are separate choices, and the file is
+  only ever deleted from the folder that job saved into.
 - **Dark & light theme**, custom titlebar, system tray, drag & drop, right-click
   context menu on each download.
 
@@ -54,6 +65,7 @@ zest-downloader/
 │
 ├── src/
 │   ├── downloader.js       # HTTP chunked engine: resume, range checks, safe naming
+│   ├── media.js            # yt-dlp wrapper: YouTube/Instagram/TikTok and friends
 │   ├── queue.js            # sql.js persistent queue + migrations + crash recovery
 │   ├── torrent.js          # WebTorrent integration
 │   ├── config.js           # Settings manager (JSON in userData)
@@ -66,6 +78,7 @@ zest-downloader/
 │   ├── manifest.json
 │   ├── background.js       # Service worker — capture layers
 │   ├── content.js          # Click interception + magnet scanning
+│   ├── video.js            # Download button on video pages
 │   └── popup.html/.js      # Extension popup UI
 │
 ├── build/
@@ -113,11 +126,16 @@ and asserts the engine handles each case.
 
 ```bash
 npm run build:win     # NSIS installer + portable exe
-npm run build:mac     # dmg + zip
-npm run build:linux   # AppImage, deb, rpm
 ```
 
-Output lands in `dist/`. Only the Windows build has been tested so far.
+Output lands in `dist/`.
+
+**Windows only for now.** The macOS and Linux targets were removed from the
+build config rather than left in place untested — Electron can package for
+them, but nobody has run the result, and shipping an untried binary is worse
+than shipping none. The code itself has no Windows-only assumptions outside
+`src/extension-installer.js`, so adding those targets back is mostly a matter
+of someone testing them.
 
 ---
 
@@ -137,7 +155,7 @@ loaded — useful for a quick try without touching your main profile.
 ### How capture works
 
 The extension talks to the app over a local HTTP bridge on `127.0.0.1:6543`,
-which Zest opens while it is running. Five layers catch downloads:
+which Zest opens while it is running. Six layers catch downloads:
 
 | Layer | Catches |
 |---|---|
@@ -146,20 +164,85 @@ which Zest opens while it is running. Five layers catch downloads:
 | `webNavigation.onBeforeNavigate` | `magnet:` navigations and `window.open` |
 | Content script click handler | Direct file links, `data-*` URLs, magnet links |
 | Context menu | "Download with Zest" on any link, image, video or audio |
+| Hover button | A Download button over any image or video on any page |
+
+### The button on the page
+
+Hovering an image or a video large enough to be the thing you are looking at
+puts a small **⬇ Zest** button in its corner. What that button does depends on
+what the element actually is:
+
+- An `<img>`, or a `<video>` whose `src` is an ordinary URL — Zest fetches that
+  URL directly, with the page as referrer and that site's cookies.
+- A player streaming through MSE, where `src` is a `blob:` that exists only
+  inside the tab — there is no file to take. On YouTube, Instagram, TikTok and
+  the other known sites the page URL goes to yt-dlp instead; anywhere else the
+  button says so rather than failing quietly.
+
+One button follows the pointer rather than one being injected per element:
+pages carry hundreds of images, and adding a node inside each would be slow and
+would disturb layouts that were never expecting it. Icons and avatars are
+skipped — an image has to be at least 160px on both sides to be offered.
+
+The extension popup's **On this page** tab lists the same media, for when the
+button is in the way or the layout hides it.
+
+On a player site the button does not download straight away. It asks Zest what
+that video actually offers and shows the list — 2160p down to 144p, plus audio
+only — and queues nothing until a choice is made. A plain image or video file
+has exactly one version, so those go immediately.
+
+### Video quality and the JS runtime
+
+YouTube protects its stream URLs with a challenge that has to be executed, and
+yt-dlp needs a JavaScript runtime to solve it. Without one it still works but
+warns that extraction is deprecated and that formats may be missing — in
+testing the same video topped out well below its real resolution without a
+runtime and reached 2160p with one.
+
+Zest uses its own copy of deno if one has been fetched, otherwise whichever of
+`deno`, `node` or `bun` is on PATH. If none is found, the Video tab offers to
+download deno (~41 MB, about 93 MB unpacked) the same way it offers ffmpeg. Nothing is
+required — without a runtime the app still works, it just reaches fewer formats.
+
+### The progress popup
+
+A capture does not raise the app. A small always-on-top window appears in
+the corner with the name, progress, speed and time left, and once the file
+exists it offers **Open**, **Open folder** and **Close**. A failure shows the
+reason and only Close, because there is nothing to open.
+
+It has no taskbar entry and never takes focus, so it cannot interrupt what
+you were typing. The full window is raised from one place only — the **See
+all downloads** link on the popup, where you asked for it.
 
 ### Logged-in downloads
 
 Downloads behind a sign-in (a university portal, a paid host, anything with a
 session) only work if Zest sends the browser's cookies. The extension reads the
-cookies for that URL and passes them along with the link; the app keeps them
-**in memory only** and never writes them to the queue database.
+cookies for that URL and passes them along with the link.
 
-Two consequences worth knowing:
+They reach yt-dlp as a short-lived Netscape cookie file rather than a `Cookie:`
+header. yt-dlp warns that a raw header is a security risk, and on YouTube it
+breaks extraction outright — the session arrives without the tokens yt-dlp
+negotiates for itself and the site answers "The page needs to be reloaded". The
+file is deleted as soon as the command that needed it finishes, and a probe
+that fails with a session retries without one, so a site that needs cookies
+still works and a public video is not broken by carrying them.
+
+Those cookies are live credentials, so they are never written to the queue
+database in the clear. They are encrypted with the OS keystore through
+Electron's `safeStorage` — DPAPI on Windows, Keychain on macOS, libsecret on
+Linux — which ties them to your user account on this machine, the same way a
+browser protects its own cookie jar. They are wiped as soon as the download
+finishes or is cancelled.
+
+Worth knowing:
 
 - The extension needs the `cookies` permission. Without it, protected downloads
   come back as the site's sign-in page.
-- Resuming such a download after restarting Zest loses the session, so it will
-  fail. That is deliberate — the alternative is storing live credentials on disk.
+- Where the OS provides no keystore, cookies stay in memory for that run only,
+  and resuming after a restart fails rather than falling back to plaintext.
 
 If a server answers with a web page when a real file was expected, Zest refuses
 the download and says so, instead of saving 9 KB of HTML as `transcript.pdf`.
@@ -168,6 +251,58 @@ the download and says so, instead of saving 9 KB of HTML as `transcript.pdf`.
 or capture is switched off with `Alt+Z`, clicks and downloads are left entirely
 to the browser. If a handoff fails after Chrome's download was already
 cancelled, the extension restarts it in Chrome so nothing is lost.
+
+---
+
+## Video downloads
+
+YouTube, Instagram and TikTok do not serve a video as a file. They stream it in
+segments behind signed, short-lived URLs, and YouTube additionally ciphers the
+signature and throttles playback with a parameter it changes regularly. The
+chunked HTTP engine cannot resolve any of that, so Zest drives
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) for these sites.
+
+**yt-dlp is not bundled.** It is fetched from its official GitHub release the
+first time you open the Video tab, with a button you have to press, and stored
+in `%APPDATA%\zest-downloader\bin\`. Keeping it separate means it can be
+re-downloaded when a site changes and breaks it — which happens regularly, and
+is the main reason a bundled copy would go stale.
+
+**It keeps itself current.** A site changing how it serves video is what breaks
+yt-dlp, and it happens every few weeks; left alone that surfaces as videos that
+downloaded fine last month failing on an extractor error that means nothing to
+the person reading it. So Zest asks GitHub once a day whether the release has
+moved, and replaces its copy if it has — no prompt, and nothing to remember.
+The Video tab shows the version it is on and when it last looked, with a button
+for the day a site breaks and tomorrow is not soon enough.
+
+A check is skipped while a video is downloading, because Windows locks a
+running executable; it retries an hour later. `autoUpdateHelper: false` in the
+config file turns the whole thing off.
+
+Two ways to use it:
+
+- **Video tab** — paste a link, press Fetch, pick a quality
+- **The extension** — a Download button appears on YouTube, Instagram and TikTok
+  video pages and sends the page URL straight to Zest
+
+### ffmpeg
+
+Above 720p, YouTube sends video and audio as separate streams that must be
+joined back together, and some videos have no combined stream at all. That
+needs ffmpeg. Zest offers a second one-click download for it (from the build
+the yt-dlp project maintains) and works without it at reduced quality — the
+Video tab says which qualities are actually available either way.
+
+### Worth knowing
+
+- Downloading from these sites is generally against their terms of service.
+  That is your call to make; the tooling is here.
+- YouTube playlists work — a link carrying `?list=` offers the whole playlist
+  as a checkbox, and the entries land in a folder named after it. Channels are
+  not supported.
+- yt-dlp and ffmpeg are separate open-source projects under their own licences
+  (Unlicense and GPL respectively). They are downloaded, not redistributed.
 
 ---
 
@@ -182,12 +317,18 @@ restart the app.
 | macOS    | `~/Library/Application Support/zest-downloader/zest-config.json` |
 | Linux    | `~/.config/zest-downloader/zest-config.json` |
 
+Only the Windows path applies to the released build; the other two are where
+the file lands when running from source on those platforms.
+
 Every key below is read by real code; invalid values are ignored with a warning
 and the previous value is kept.
 
 ```json
 {
   "defaultDownloadDir":  "~/Downloads",
+  "startAtLogin":        true,
+  "autoUpdateHelper":    true,
+  "helperCheckedAt":     0,
   "maxChunksPerFile":    8,
   "maxConcurrentDl":     4,
   "retryLimit":          3,
@@ -201,6 +342,9 @@ and the previous value is kept.
   "bridgePort":          6543
 }
 ```
+
+`helperCheckedAt` is the app's own bookkeeping — when the yt-dlp update check
+last got an answer — rather than something to set by hand.
 
 The download folder chosen in the UI and the theme are stored separately, in
 the renderer's `localStorage`.
@@ -310,9 +454,29 @@ Events: `download:meta`, `download:progress`, `download:merging`,
 
 ### Known dependency advisories
 
-`npm audit` reports high-severity advisories in the
-`webtorrent → torrent-discovery → bittorrent-tracker` chain. Clearing them
-needs a major WebTorrent upgrade, which has not been done yet.
+`npm audit` reports high-severity advisories along this chain:
+
+```
+webtorrent → torrent-discovery → bittorrent-tracker → ip@2.0.1
+```
+
+Everything above `ip` is only reported because it depends on `ip`. The advisory
+itself (CVE-2024-29415, `isPublic()` misclassifying addresses) has **no fix
+available**: `ip` has three published versions, all affected, and the package is
+no longer maintained. Upgrading does not help either — the newest
+`bittorrent-tracker` still requires `ip@^2.0.1`, and WebTorrent 3.x pulls the
+same `torrent-discovery` line.
+
+`npm audit fix --force` "resolves" it by downgrading WebTorrent from 2.x to
+**0.7.3**, which removes almost everything the app uses. Don't run it.
+
+What limits the impact here: `ip` is imported by exactly one file,
+`bittorrent-tracker/lib/server/parse-udp.js`, which parses inbound requests to a
+UDP **tracker server**. Zest only ever runs the tracker *client*, so that parser
+never sees input. The dependency is loaded, but the vulnerable function is not
+reachable from anything Zest does.
+
+This will keep showing up in `npm audit` until upstream drops `ip`.
 
 ---
 

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Zest Downloader",
   "version": "1.0.0",
-  "description": "Capture downloads and magnet links \u2014 send them to Zest Downloader automatically.",
+  "description": "Capture downloads and magnet links — send them to Zest Downloader automatically.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -28,6 +28,15 @@
       ],
       "js": [
         "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "video.js"
       ],
       "run_at": "document_idle"
     }

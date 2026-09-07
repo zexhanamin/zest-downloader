@@ -42,7 +42,20 @@ const INVOKE_CHANNELS = new Set([
   'app:revealExtension',
   'app:launchBrowserWithExtension',
   'app:quit',
+  'popup:hide',
+  'popup:openApp',
+  'popup:theme',
   'win:isMaximized',
+
+  // Video downloads
+  'media:check',
+  'media:helperStatus',
+  'media:installHelper',
+  'media:updateHelper',
+  'media:installFfmpeg',
+  'media:installRuntime',
+  'media:probe',
+  'media:add',
 
   // Updates
   'update:check',
@@ -75,6 +88,12 @@ const EVENT_CHANNELS = new Set([
   'torrent:error',
 
   // App events
+  'media:meta',
+  'media:helperProgress',
+  'media:helperUpdated',
+  'popup:job',
+  'popup:queued',
+  'popup:theme',
   'bridge:error',
   'update:available',
   'update:not-available',
@@ -179,8 +198,12 @@ contextBridge.exposeInMainWorld('zest', {
   /** @param {string} id @returns {Promise<object|null>} */
   queueGet: (id) => invoke('queue:get', { id }),
 
-  /** @param {string} id */
-  queueRemove: (id) => invoke('queue:remove', { id }),
+  /**
+   * Remove a job from the list.
+   * @param {string}  id
+   * @param {boolean} [deleteFile] also delete what was downloaded
+   */
+  queueRemove: (id, deleteFile = false) => invoke('queue:remove', { id, deleteFile }),
 
   /** Open a completed download file */
   queueOpen: (id) => invoke('queue:open', { id }),
@@ -225,6 +248,33 @@ contextBridge.exposeInMainWorld('zest', {
     catch (_) { return file?.path || ''; }
   },
 
+  // ── Video downloads (YouTube, Instagram, TikTok…) ──
+
+  /** Is this link a supported video page? @returns {Promise<{site:string|null}>} */
+  mediaCheck: (url) => invoke('media:check', { url }),
+
+  /** Whether the yt-dlp helper is installed, and what it can do */
+  mediaHelperStatus: () => invoke('media:helperStatus'),
+
+  /** Fetch and install the yt-dlp helper — only from an explicit user action */
+  mediaInstallHelper: () => invoke('media:installHelper'),
+
+  /** Ask GitHub whether yt-dlp has moved on, and take it if it has */
+  mediaUpdateHelper: () => invoke('media:updateHelper'),
+
+  /** Fetch ffmpeg, needed for resolutions above 720p */
+  mediaInstallFfmpeg: () => invoke('media:installFfmpeg'),
+
+  /** Fetch deno, needed for the formats YouTube guards behind a challenge */
+  mediaInstallRuntime: () => invoke('media:installRuntime'),
+
+  /** Title, thumbnail and quality choices for a video page */
+  mediaProbe: (url) => invoke('media:probe', { url }),
+
+  /** Queue a video download at the chosen quality */
+  mediaAdd: (url, savePath, quality, playlist) =>
+    invoke('media:add', { url, savePath, quality, playlist }),
+
   // ── Browser extension setup ───────────────
 
   /** Where the unpacked extension lives + bridge port */
@@ -243,6 +293,17 @@ contextBridge.exposeInMainWorld('zest', {
   winClose:       () => post('win:close'),
   winIsMaximized: () => invoke('win:isMaximized'),
   quitApp:        () => invoke('app:quit'),
+
+  // ── Progress popup ────────────────────────
+
+  /** Dismiss the popup — it comes back on the next capture */
+  popupHide:    () => invoke('popup:hide'),
+
+  /** Raise the full window from the popup, at the user's request */
+  popupOpenApp: () => invoke('popup:openApp'),
+
+  /** Tell the popup which theme to wear */
+  popupTheme:   (theme) => invoke('popup:theme', { theme }),
 
   // ── Updates ───────────────────────────────
 

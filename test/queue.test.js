@@ -14,7 +14,7 @@ const path = require('path');
 const os   = require('os');
 const fs   = require('fs-extra');
 
-const { DownloadQueue, STATUS } = require('../src/queue');
+const { DownloadQueue, STATUS, SCHEMA } = require('../src/queue');
 
 let passed = 0;
 let failed = 0;
@@ -42,6 +42,7 @@ async function makeQueue(dbPath) {
   q.db  = (await fs.pathExists(dbPath))
     ? new q.SQL.Database(await fs.readFile(dbPath))
     : new q.SQL.Database();
+  q.db.run(SCHEMA);   // the real schema, never a hand-copied one
   return q;
 }
 
@@ -52,15 +53,6 @@ async function main() {
   try {
     console.log('\nbasic CRUD');
     const q = await makeQueue(dbPath);
-    q.db.run(`
-      CREATE TABLE IF NOT EXISTS jobs (
-        id TEXT PRIMARY KEY, url TEXT NOT NULL, save_path TEXT NOT NULL,
-        filename TEXT, type TEXT NOT NULL DEFAULT 'http', referrer TEXT DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'queued', total_bytes INTEGER DEFAULT 0,
-        downloaded INTEGER DEFAULT 0, speed TEXT DEFAULT '0 B/s', eta INTEGER DEFAULT 0,
-        error_msg TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-        completed_at INTEGER
-      );`);
 
     const id = q.add({ url: 'https://example.com/a.zip', savePath: dir, referrer: 'https://ref' });
     const job = q.get(id);
@@ -116,6 +108,38 @@ async function main() {
 
       legacy._migrate();   // must be safe to run twice
       ok('migration is idempotent', legacy.get('old1') !== null);
+      legacy.db.close();
+    }
+
+    console.log('\nsession credentials');
+    {
+      // The queue only ever holds an OS-encrypted blob; main.js does the
+      // encrypting. What matters here is that it round-trips and can be wiped.
+      const blob = Buffer.from('pretend-this-is-DPAPI-output').toString('base64');
+      q.setCookie(id, blob);
+      eq('stored blob comes back', q.get(id).cookie_enc, blob);
+      q.clearCookie(id);
+      eq('cleared to empty', q.get(id).cookie_enc, '');
+
+      const legacyPath = path.join(dir, 'legacy2.db');
+      const legacy = new DownloadQueue();
+      legacy.dbPath = legacyPath;
+      const sqljs = await import('sql.js');
+      legacy.SQL = await (sqljs.default || sqljs)();
+      legacy.db  = new legacy.SQL.Database();
+      legacy.db.run(`
+        CREATE TABLE jobs (
+          id TEXT PRIMARY KEY, url TEXT NOT NULL, save_path TEXT NOT NULL,
+          filename TEXT, type TEXT NOT NULL DEFAULT 'http',
+          status TEXT NOT NULL DEFAULT 'queued', total_bytes INTEGER DEFAULT 0,
+          downloaded INTEGER DEFAULT 0, speed TEXT DEFAULT '0 B/s', eta INTEGER DEFAULT 0,
+          error_msg TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          completed_at INTEGER
+        );`);
+      legacy._migrate();
+      const cols = legacy._all('PRAGMA table_info(jobs)').map(r => r.name);
+      ok('migration adds cookie_enc to an old database', cols.includes('cookie_enc'));
+      ok('migration still adds referrer',                cols.includes('referrer'));
       legacy.db.close();
     }
 

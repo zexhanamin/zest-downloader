@@ -1,0 +1,14 @@
+# Normalise line endings so a contributor on Windows does not turn every
+# file into a whole-file diff. Text is stored as LF in the repository and
+# checked out however the local platform prefers.
+* text=auto eol=lf
+
+# Binary assets must never be touched
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.gif binary
+*.webp binary
+*.zip binary
+*.exe binary

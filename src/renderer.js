@@ -12,7 +12,8 @@ const state = {
   // Two independent axes: the sidebar picks a kind of transfer,
   // the tabs above the list pick a status within it.
   activeView:   'downloads',   // downloads | torrents | completed
-  activeFilter: 'all',         // all | downloading | paused | done | error
+  activeFilter: 'all',         // all | downloading | paused | unfinished | done | error
+  search:       '',            // free text typed into the search box
   defaultDir:   '',
   totalSpeed:   0,
   totalPeers:   0,
@@ -154,6 +155,9 @@ function footerStats(job = {}) {
     `<span class="progress-stat"${style ? ` style="${style}"` : ''}>${esc(text)}</span>`;
 
   if (job.status === 'downloading') {
+    // A playlist is many downloads under one row — without the position it
+    // looks stuck whenever an entry finishes and the next one starts.
+    if (job.itemCount > 1) parts.push(stat(`Video ${job.item} of ${job.itemCount}`));
     parts.push(stat(`↓ ${job.speed && job.speed !== '0 B/s' ? job.speed : '—'}`));
     const eta = etaLabel(job);
     if (eta) parts.push(stat(eta));
@@ -211,7 +215,7 @@ function buildCard(job) {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>`;
   const cancelBtn = `<button class="dl-action-btn danger" title="Cancel" onclick="handleCancel('${job.id}','${job.type}')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>`;
-  const removeBtn = `<button class="dl-action-btn danger" title="Remove" onclick="handleRemove('${job.id}')">
+  const removeBtn = `<button class="dl-action-btn danger" title="Remove" onclick="confirmRemove('${job.id}')">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>`;
 
   let actions = '';
@@ -261,15 +265,27 @@ function filterJobs(jobs) {
   const v = state.activeView;
   if      (v === 'downloads') out = out.filter(j => j.type !== 'torrent');
   else if (v === 'torrents')  out = out.filter(j => j.type === 'torrent');
+  else if (v === 'video')     out = out.filter(j => j.type === 'media');
   else if (v === 'completed') out = out.filter(j => j.status === 'done');
 
   // 2. Status tabs — which state within that view
   const f = state.activeFilter;
-  if (f === 'downloading') return out.filter(j => j.status==='downloading'||j.status==='seeding'||j.status==='queued');
-  if (f === 'paused')      return out.filter(j => j.status==='paused');
-  if (f === 'done')        return out.filter(j => j.status==='done');
-  if (f === 'error')       return out.filter(j => j.status==='error'||j.status==='cancelled');
-  return out;
+  if (f === 'downloading') out = out.filter(j => j.status==='downloading'||j.status==='seeding'||j.status==='queued');
+  else if (f === 'paused') out = out.filter(j => j.status==='paused');
+  else if (f === 'done')   out = out.filter(j => j.status==='done');
+  else if (f === 'error')  out = out.filter(j => j.status==='error'||j.status==='cancelled');
+  // Anything that did not finish, whatever stopped it — the list people
+  // actually want when they come back to clean up.
+  else if (f === 'unfinished') {
+    out = out.filter(j => j.status !== 'done' && j.status !== 'seeding');
+  }
+
+  // 3. Search — matches the visible name and the source it came from
+  const q = state.search.trim().toLowerCase();
+  if (!q) return out;
+  return out.filter(j =>
+    displayName(j).toLowerCase().includes(q)
+    || String(j.url || '').toLowerCase().includes(q));
 }
 
 /** Set for one render when the whole list is being replaced, not trimmed */
@@ -485,7 +501,8 @@ function attachListeners() {
 
   window.zest.on('download:progress', (p) => {
     const job = upsert(p.id, { downloaded:p.downloadedBytes, total_bytes:p.totalBytes,
-      speed:p.speed, speedRaw:p.speedRaw||0, eta:p.eta, status:'downloading' });
+      speed:p.speed, speedRaw:p.speedRaw||0, eta:p.eta, status:'downloading',
+      item:p.item||0, itemCount:p.itemCount||0 });
     state.totalSpeed = state.jobs.filter(j=>j.status==='downloading').reduce((s,j)=>s+(j.speedRaw||0),0);
     patchCard(document.getElementById(`card-${p.id}`), job);
     updateStatusBar();
@@ -524,6 +541,13 @@ function attachListeners() {
   // The bridge is what the browser extension talks to — if it never came up,
   // say so instead of leaving the user wondering why nothing is captured.
   window.zest.on('bridge:error', ({message}) => window.showToast?.(message, 'error'));
+
+  // yt-dlp replaces itself in the background. Mention it once when it does:
+  // silence would be indistinguishable from a feature that never ran.
+  window.zest.on('media:helperUpdated', ({ version }) => {
+    window.showToast?.(`Video helper updated to yt-dlp ${version}`, 'success');
+    window.refreshVideoHelper?.();
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -555,10 +579,30 @@ window.handleRetry = async (id, _type) => {
   await loadQueue();
 };
 
-window.handleRemove = async (id) => {
-  await window.zest?.queueRemove(id);
+window.handleRemove = async (id, deleteFile = false) => {
+  const res = await window.zest?.queueRemove(id, deleteFile);
   state.jobs = state.jobs.filter(j=>j.id!==id);
   renderList();
+  if (deleteFile) {
+    if (res?.error) window.showToast?.(`Removed, but the file stayed: ${res.error}`, 'error');
+    else if (res?.deleted) window.showToast?.('Removed and file deleted', 'success');
+    else window.showToast?.('Removed — no file was found to delete', 'info');
+  }
+};
+
+/**
+ * Removing a download and deleting what it produced are different things,
+ * and the second one cannot be undone, so it is asked rather than assumed.
+ */
+window.confirmRemove = (id) => {
+  const job = state.jobs.find(j => j.id === id);
+  if (!job) return;
+  window.showConfirm?.({
+    title: 'Remove this download?',
+    body:  displayName(job),
+    onlyRecord: () => window.handleRemove(id, false),
+    alsoFile:   () => window.handleRemove(id, true),
+  });
 };
 
 window.handleOpen = async (id) => {
@@ -574,6 +618,12 @@ window.handleFolder = async (id) => {
 // ─────────────────────────────────────────────
 //  Filter
 // ─────────────────────────────────────────────
+/** Free-text search across the list */
+window.applySearch = (text) => {
+  state.search = String(text || '');
+  renderList();
+};
+
 window.applyFilter = (filter) => {
   state.activeFilter   = filter;
   _skipExitAnimation   = true;
@@ -678,7 +728,7 @@ function setupContextMenu() {
     m.appendChild(div());
     if (job.status==='error') m.appendChild(item(svgs.retry,'Retry',()=>window.handleRetry(id,job.type)));
     m.appendChild(item(svgs.trash, isActive||job.status==='paused'?'Cancel & remove':'Remove',
-      ()=>{ window.handleCancel(id,job.type).then(()=>window.handleRemove(id)); }, true));
+      ()=>{ window.handleCancel(id,job.type).then(()=>window.confirmRemove(id)); }, true));
 
     m.style.left = `${Math.min(e.clientX, window.innerWidth-180)}px`;
     m.style.top  = `${Math.min(e.clientY, window.innerHeight-200)}px`;

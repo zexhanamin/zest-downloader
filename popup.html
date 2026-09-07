@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'none';
+    script-src 'self' 'unsafe-inline';
+    style-src 'self' 'unsafe-inline';
+    img-src 'self' data:;
+    connect-src 'none';
+    form-action 'none';
+    base-uri 'none';
+  " />
+  <title>Zest — download</title>
+  <style>
+    :root {
+      --accent: #5B5EF4;
+      --bg:     #18181C;
+      --card:   #1E1E24;
+      --hover:  #26262E;
+      --border: #2A2A34;
+      --text:   #EDEDF0;
+      --sec:    #8888A0;
+      --muted:  #55556A;
+      --ok:     #5BD98A;
+      --bad:    #F46B6B;
+    }
+    [data-theme="light"] {
+      --bg: #FFFFFF; --card: #F7F7FA; --hover: #EDEDF2; --border: #E0E0EA;
+      --text: #1A1A1E; --sec: #6B6B80; --muted: #ABABBC;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%; overflow: hidden; user-select: none;
+      font: 13px/1.4 'Inter', system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    #wrap {
+      height: 100%; display: flex; flex-direction: column;
+      border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    }
+
+    /* Title strip — the only draggable part */
+    #bar {
+      height: 30px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 7px; padding: 0 6px 0 10px;
+      background: var(--card); border-bottom: 1px solid var(--border);
+      -webkit-app-region: drag;
+    }
+    #bar img { width: 15px; height: 15px; border-radius: 4px; }
+    #bar span { font-size: 11.5px; font-weight: 600; color: var(--sec); flex: 1; }
+    #hide {
+      -webkit-app-region: no-drag;
+      width: 24px; height: 22px; border: none; background: transparent;
+      color: var(--muted); cursor: pointer; border-radius: 5px;
+      font-size: 15px; line-height: 1;
+    }
+    #hide:hover { background: var(--hover); color: var(--text); }
+
+    #body { flex: 1; padding: 11px 13px; display: flex; flex-direction: column; }
+
+    #name {
+      font-size: 12.5px; font-weight: 500; margin-bottom: 3px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #sub { font-size: 11px; color: var(--muted); margin-bottom: 9px; }
+
+    #track {
+      height: 5px; background: var(--hover); border-radius: 3px;
+      overflow: hidden; margin-bottom: 7px;
+    }
+    #fill {
+      height: 100%; width: 0%; background: var(--accent);
+      border-radius: 3px; transition: width 200ms ease;
+    }
+    #fill.done  { background: var(--ok); }
+    #fill.error { background: var(--bad); }
+
+    #stats {
+      display: flex; gap: 10px; font-size: 11px; color: var(--sec);
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+    }
+    #stats .grow { flex: 1; }
+
+    #actions { display: none; gap: 7px; margin-top: 11px; }
+    #actions.show { display: flex; }
+    .btn {
+      flex: 1; height: 30px; border: 1px solid var(--border);
+      background: var(--card); color: var(--text);
+      border-radius: 7px; cursor: pointer;
+      font: 500 12px 'Inter', system-ui, sans-serif;
+    }
+    .btn:hover { background: var(--hover); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn.primary:hover { filter: brightness(1.1); }
+
+    #more {
+      font-size: 11px; color: var(--muted); margin-top: 8px;
+      text-align: center; cursor: pointer; display: none;
+    }
+    #more.show { display: block; }
+    #more:hover { color: var(--sec); text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="bar">
+      <img src="assets/icon128.png" alt="" />
+      <span id="title">Downloading</span>
+      <button id="hide" title="Hide">&times;</button>
+    </div>
+
+    <div id="body">
+      <div id="name">Starting…</div>
+      <div id="sub"></div>
+      <div id="track"><div id="fill"></div></div>
+      <div id="stats">
+        <span id="size">—</span>
+        <span class="grow"></span>
+        <span id="speed"></span>
+        <span id="eta"></span>
+      </div>
+
+      <div id="actions">
+        <button class="btn" id="act-close">Close</button>
+        <button class="btn" id="act-folder">Open folder</button>
+        <button class="btn primary" id="act-open">Open</button>
+      </div>
+
+      <div id="more">See all downloads</div>
+    </div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let current = null;
+
+function fmtBytes(b) {
+  if (!b || b <= 0) return '0 B';
+  const k = 1024, u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(u.length - 1, Math.floor(Math.log(b) / Math.log(k)));
+  return `${(b / Math.pow(k, i)).toFixed(1)} ${u[i]}`;
+}
+
+function fmtEta(s) {
+  if (!s || s <= 0) return '';
+  if (s < 60) return `${s}s left`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s left`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m left`;
+}
+
+/** Render one job. Everything the popup shows comes from here. */
+function render(job) {
+  if (!job) return;
+  current = job;
+
+  const done  = job.status === 'done';
+  const error = job.status === 'error';
+  const total = Number(job.total_bytes) || 0;
+  const got   = Number(job.downloaded) || 0;
+  const pct   = total > 0 ? Math.min(100, Math.round((got / total) * 100)) : (done ? 100 : 0);
+
+  $('sub').style.color = '';
+  $('name').textContent = job.name || 'Download';
+  $('name').title = job.name || '';
+  $('fill').style.width = `${pct}%`;
+  $('fill').className = done ? 'done' : error ? 'error' : '';
+
+  if (error) {
+    $('title').textContent = 'Download failed';
+    $('sub').textContent = job.error_msg || 'Something went wrong';
+    $('size').textContent = '';
+    $('speed').textContent = '';
+    $('eta').textContent = '';
+  } else if (done) {
+    $('title').textContent = 'Download complete';
+    $('sub').textContent = job.site || '';
+    $('size').textContent = fmtBytes(total || got);
+    $('speed').textContent = '';
+    $('eta').textContent = '';
+  } else {
+    $('title').textContent = 'Downloading';
+    $('sub').textContent = job.itemCount > 1
+      ? `Video ${job.item} of ${job.itemCount}`
+      : (job.site || '');
+    $('size').textContent = total > 0
+      ? `${fmtBytes(got)} / ${fmtBytes(total)}`
+      : (got > 0 ? fmtBytes(got) : 'Size unknown');
+    $('speed').textContent = job.speed && job.speed !== '0 B/s' ? `↓ ${job.speed}` : '';
+    $('eta').textContent = fmtEta(Number(job.eta) || 0);
+  }
+
+  // Open and Open folder only mean something once a file exists
+  $('actions').classList.toggle('show', done || error);
+  $('act-open').style.display = done ? '' : 'none';
+  $('act-folder').style.display = done ? '' : 'none';
+}
+
+$('hide').addEventListener('click', () => window.zest?.popupHide());
+$('act-close').addEventListener('click', () => window.zest?.popupHide());
+/**
+ * Open and Open folder can fail — the file may have been moved, renamed or
+ * deleted since. Hiding the window on the way out swallowed that entirely,
+ * so the button looked broken. Say what happened and stay put.
+ */
+async function act(fn) {
+  if (!current) return;
+  const res = await fn(current.id);
+  if (res && res.error) {
+    $('sub').textContent = res.error;
+    $('sub').style.color = 'var(--bad)';
+    return false;
+  }
+  return true;
+}
+
+$('act-open').addEventListener('click', async () => {
+  if (await act((id) => window.zest?.queueOpen(id))) window.zest?.popupHide();
+});
+$('act-folder').addEventListener('click', () => act((id) => window.zest?.queueShowInFolder(id)));
+$('more').addEventListener('click', () => window.zest?.popupOpenApp());
+
+// Extra downloads running behind this one
+window.zest?.on('popup:job', (job) => render(job));
+window.zest?.on('popup:queued', ({ waiting }) => {
+  $('more').classList.toggle('show', waiting > 0);
+  $('more').textContent = waiting > 0
+    ? `${waiting} more in the queue — see all downloads`
+    : 'See all downloads';
+});
+
+// Follow the app's theme so the popup does not glare at night
+window.zest?.on('popup:theme', ({ theme }) => {
+  document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+});
+</script>
+</body>
+</html>

@@ -44,6 +44,9 @@ const SCHEMA = `
     filename      TEXT,
     type          TEXT    NOT NULL DEFAULT 'http',
     referrer      TEXT    DEFAULT '',
+    quality       TEXT    DEFAULT '',
+    file_path     TEXT    DEFAULT '',
+    cookie_enc    TEXT    DEFAULT '',
     status        TEXT    NOT NULL DEFAULT 'queued',
     total_bytes   INTEGER DEFAULT 0,
     downloaded    INTEGER DEFAULT 0,
@@ -110,7 +113,12 @@ class DownloadQueue {
       existing = this._all('PRAGMA table_info(jobs)').map(r => r.name);
     } catch (_) { return; }
 
-    const columns = { referrer: "TEXT DEFAULT ''" };
+    const columns = {
+      referrer:   "TEXT DEFAULT ''",
+      cookie_enc: "TEXT DEFAULT ''",
+      quality:    "TEXT DEFAULT ''",
+      file_path:  "TEXT DEFAULT ''",
+    };
     for (const [name, decl] of Object.entries(columns)) {
       if (existing.includes(name)) continue;
       try {
@@ -207,14 +215,15 @@ class DownloadQueue {
 
   // ── CRUD ─────────────────────────────────
 
-  add({ url, savePath, filename = null, type = 'http', referrer = '' }) {
+  add({ url, savePath, filename = null, type = 'http', referrer = '', quality = '' }) {
     const id  = `zest_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const now = Date.now();
     this._run(
-      `INSERT INTO jobs (id, url, save_path, filename, type, referrer, status, created_at, updated_at)
-       VALUES (:id, :url, :savePath, :filename, :type, :referrer, :status, :now, :now)`,
+      `INSERT INTO jobs (id, url, save_path, filename, type, referrer, quality, status, created_at, updated_at)
+       VALUES (:id, :url, :savePath, :filename, :type, :referrer, :quality, :status, :now, :now)`,
       { ':id': id, ':url': url, ':savePath': savePath, ':filename': filename,
-        ':type': type, ':referrer': referrer || '', ':status': STATUS.QUEUED, ':now': now }
+        ':type': type, ':referrer': referrer || '', ':quality': quality || '',
+        ':status': STATUS.QUEUED, ':now': now }
     );
     console.log(`[Queue] Added job ${id}`);
     return id;
@@ -232,6 +241,27 @@ class DownloadQueue {
       );
     }
     return this._all('SELECT * FROM jobs ORDER BY created_at DESC');
+  }
+
+  // ── Session credentials ───────────────────
+
+  /**
+   * Store the encrypted Cookie header for a job.
+   *
+   * Only ever an OS-encrypted blob — the caller is responsible for the
+   * encryption, and passing plaintext here would put live session
+   * credentials in a plain file.
+   */
+  setCookie(id, encrypted) {
+    this._run(
+      'UPDATE jobs SET cookie_enc = :c WHERE id = :id',
+      { ':c': encrypted || '', ':id': id }
+    );
+  }
+
+  /** Wipe stored credentials — call as soon as a job stops needing them */
+  clearCookie(id) {
+    this._run("UPDATE jobs SET cookie_enc = '' WHERE id = :id", { ':id': id });
   }
 
   // ── Status updates ────────────────────────
@@ -255,12 +285,20 @@ class DownloadQueue {
    * byte count that had been counted during the transfer — so a finished
    * download displayed no size at all.
    */
-  setDone(id, filename = null, totalBytes = null) {
+  /**
+   * @param {string|null} [filePath] where the file really landed
+   *
+   * Rebuilding the path from save_path + filename guesses wrong whenever
+   * the engine chose its own layout — a playlist entry lands in a subfolder
+   * named after the playlist, and Open then points at nothing.
+   */
+  setDone(id, filename = null, totalBytes = null, filePath = null) {
     const now = Date.now();
     this._run(
       `UPDATE jobs
        SET status = :s,
            filename    = COALESCE(:fn, filename),
+           file_path   = COALESCE(:fp, file_path),
            total_bytes = CASE
                            WHEN :tb > 0        THEN :tb
                            WHEN total_bytes > 0 THEN total_bytes
@@ -274,7 +312,8 @@ class DownloadQueue {
            speed = '0 B/s', eta = 0,
            updated_at = :now, completed_at = :now
        WHERE id = :id`,
-      { ':s': STATUS.DONE, ':fn': filename, ':tb': totalBytes ?? 0, ':now': now, ':id': id }
+      { ':s': STATUS.DONE, ':fn': filename, ':fp': filePath, ':tb': totalBytes ?? 0,
+        ':now': now, ':id': id }
     );
   }
 
@@ -346,4 +385,4 @@ class DownloadQueue {
 // ─────────────────────────────────────────────
 const queue = new DownloadQueue();
 
-module.exports = { queue, DownloadQueue, STATUS };
+module.exports = { queue, DownloadQueue, STATUS, SCHEMA };

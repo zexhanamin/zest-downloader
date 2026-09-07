@@ -122,12 +122,14 @@ function shouldCaptureFilename(filename = '') {
  * left in, restoring a Gmail tab — on a new tab, a browser restart, or a PC
  * boot — fires off a download for every picture on the page.
  *
- * A real download is a top-level navigation or a request the page made
- * outside the normal resource pipeline. Everything else (images, media,
- * scripts, stylesheets, fonts, frames, XHR) is a page sub-resource and is
- * never a file the user chose to save.
+ * Only top-level navigation qualifies. `other` covers web app manifests,
+ * beacons and prefetches, and Google routinely serves JSON endpoints with
+ * `Content-Disposition: attachment` as an anti-XSSI measure — which is why
+ * opening Gmail kept downloading its manifest.json. Nothing is lost by
+ * excluding it: anything Chrome genuinely treats as a download also raises
+ * downloads.onCreated, which is the layer that handles those.
  */
-const DOWNLOADABLE_REQ_TYPES = new Set(['main_frame', 'other']);
+const DOWNLOADABLE_REQ_TYPES = new Set(['main_frame']);
 
 // Known API endpoint slugs (Google, analytics, etc.)
 const API_SLUGS = new Set([
@@ -260,6 +262,26 @@ async function sendToZest(payload) {
   }
 }
 
+/** Ask Zest what qualities a video page offers */
+async function probeWithZest(url, cookie) {
+  try {
+    const ctrl  = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 45000);
+    const res   = await fetch(`${ZEST_BRIDGE_URL}/probe`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ url, cookie }),
+      signal:  ctrl.signal,
+    });
+    clearTimeout(timer);
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body.ok) return body;
+    return { ok: false, error: body.error || `HTTP ${res.status}` };
+  } catch (_) {
+    return { ok: false, error: 'Zest Downloader is not running' };
+  }
+}
+
 // ─────────────────────────────────────────────
 //  Capture handler — called from all intercept points
 // ─────────────────────────────────────────────
@@ -271,7 +293,11 @@ async function sendToZest(payload) {
  */
 async function captureDownload({ url, filename = '', referrer = '', mime = '', force = false }) {
   if (!url) return { ok: false, error: 'No URL' };
-  if (alreadyCaptured(url)) return { ok: false, reason: 'duplicate' };
+  // The duplicate window exists because downloads.onCreated and the header
+  // layer both fire for one automatic capture. A person clicking the button
+  // a second time means it — to retry, or to take a different quality — so
+  // refusing them for thirty seconds just looks broken.
+  if (!force && alreadyCaptured(url)) return { ok: false, reason: 'duplicate' };
   if (!await getSetting('enabled', true)) return { ok: false, reason: 'disabled', error: 'Zest capture is off' };
 
   if (!force) {
@@ -315,6 +341,25 @@ async function captureDownload({ url, filename = '', referrer = '', mime = '', f
 //  Catches: direct link clicks, JS-triggered
 //  downloads, any time Chrome shows a download bar
 // ─────────────────────────────────────────────
+/**
+ * Is this a download that is starting right now?
+ *
+ * Chrome replays onCreated for items already in the download list whenever
+ * the service worker registers its listener again — on browser start, on an
+ * extension reload, on any wake from idle. Without this check the whole
+ * history gets grabbed at once: each old entry is cancelled, erased from
+ * Chrome's list, and re-fetched, which fails because those URLs were signed
+ * one-time links. That is what made the app "download everything" every time
+ * the browser opened, and it destroyed the download history doing it.
+ */
+function isFreshDownload(item) {
+  if (item.state !== 'in_progress') return false;   // replayed items are complete/interrupted
+  if (item.bytesReceived > 0) return false;         // already running before we saw it
+  const started = Date.parse(item.startTime || '');
+  if (!Number.isFinite(started)) return false;      // no usable timestamp — do not touch it
+  return Math.abs(Date.now() - started) < 60_000;
+}
+
 chrome.downloads.onCreated.addListener(async (item) => {
   const url      = item.url || item.finalUrl || '';
   const filename = item.filename || '';
@@ -324,18 +369,23 @@ chrome.downloads.onCreated.addListener(async (item) => {
   // Every reason to bail has to be checked BEFORE cancelling. Cancelling
   // first and asking questions later is how a disabled extension, or one
   // whose app is closed, silently destroys the user's download.
+  if (!isFreshDownload(item)) return;
   if (!await getSetting('enabled', true)) return;
   // Chrome opening a download entry IS the confirmation that this is a file,
   // whatever the URL looks like. Only refuse what Zest genuinely cannot fetch.
   if (!isFetchableByZest(url)) return;
   if (isApiLikeUrl(url, true)) return;
 
-  const stopChrome = async () => {
-    try {
-      await chrome.downloads.cancel(item.id);
-      await chrome.downloads.erase({ id: item.id });
-    } catch (_) {}
+  // Cancel stops the duplicate transfer. Erase throws the entry out of the
+  // user's download history, so it only happens once Zest has actually taken
+  // the file — a failed handoff must leave a trace behind.
+  const cancelChrome = async () => {
+    try { await chrome.downloads.cancel(item.id); } catch (_) {}
   };
+  const forgetChrome = async () => {
+    try { await chrome.downloads.erase({ id: item.id }); } catch (_) {}
+  };
+  const stopChrome = async () => { await cancelChrome(); await forgetChrome(); };
 
   // The webRequest layer usually sees the response headers first and has
   // already handed this to Zest. Chrome's copy still needs cancelling —
@@ -347,14 +397,16 @@ chrome.downloads.onCreated.addListener(async (item) => {
 
   if (!await pingBridge()) return;        // app is down — let Chrome have it
 
-  await stopChrome();
+  await cancelChrome();
 
   // force: Chrome already classified this as a download, so the heuristics
   // that guard *guessing* from a bare URL have nothing left to add.
   const res = await captureDownload({ url, filename, referrer, mime, force: true });
 
-  // Handoff failed after we already cancelled — give the download back
-  if (!res.ok && res.reason !== 'duplicate') {
+  if (res.ok || res.reason === 'duplicate') {
+    await forgetChrome();
+  } else {
+    // Handoff failed after we already cancelled — give the download back
     try { await chrome.downloads.download({ url }); } catch (_) {}
   }
 });
@@ -483,6 +535,74 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           mime:     msg.mime     || '',
         });
         sendResponse(res);
+        break;
+      }
+
+      // The button asks what is on offer before it downloads anything.
+      case 'PROBE_VIDEO': {
+        const url = (msg.url || '').trim();
+        if (!url) { sendResponse({ ok: false, error: 'No URL' }); return; }
+        if (!await getSetting('enabled', true)) {
+          sendResponse({ ok: false, error: 'Zest capture is off' });
+          return;
+        }
+        sendResponse(await probeWithZest(url, await cookieHeaderFor(url)));
+        break;
+      }
+
+      // The Download button on a YouTube / Instagram / TikTok page. The page
+      // URL is not a file, so it skips every file heuristic and goes straight
+      // to the app, which resolves the actual video itself.
+      case 'CAPTURE_VIDEO': {
+        const url = (msg.url || '').trim();
+        if (!url) { sendResponse({ ok: false, error: 'No URL' }); return; }
+        if (!await getSetting('enabled', true)) {
+          sendResponse({ ok: false, error: 'Zest capture is off' });
+          return;
+        }
+        // Instagram and friends need the page's session to resolve anything
+        const cookie = await cookieHeaderFor(url);
+        const result = await sendToZest({
+          type: 'media', url, referrer: url, cookie, quality: msg.quality || 'best',
+        });
+        if (result.ok) {
+          showNotification('Video sent to Zest', url.slice(0, 90));
+          logCapture({ url, type: 'media', filename: '', timestamp: Date.now() });
+        }
+        sendResponse(result);
+        break;
+      }
+
+      // The hover button over a real <img> or <video> file. The URL is the
+      // media itself, so it goes to the normal HTTP engine with the page as
+      // referrer and that site's cookies — plenty of hosts refuse otherwise.
+      case 'CAPTURE_MEDIA_FILE': {
+        const url = (msg.url || '').trim();
+        if (!url) { sendResponse({ ok: false, error: 'No URL' }); return; }
+        if (!await getSetting('enabled', true)) {
+          sendResponse({ ok: false, error: 'Zest capture is off' });
+          return;
+        }
+        if (!isFetchableByZest(url)) {
+          sendResponse({ ok: false, error: 'That media is embedded, not a file' });
+          return;
+        }
+        const cookie = await cookieHeaderFor(url);
+        const result = await sendToZest({
+          type: 'http', url, referrer: msg.referrer || sender.url || '', cookie,
+        });
+        if (result.ok) {
+          showNotification('Sent to Zest', url.split('/').pop().slice(0, 80) || url.slice(0, 80));
+          logCapture({ url, type: 'http', filename: '', timestamp: Date.now() });
+        }
+        sendResponse(result);
+        break;
+      }
+
+      // What the page is offering, for the popup's "On this page" tab
+      case 'PAGE_MEDIA': {
+        await setSetting('page_media', { url: msg.pageUrl, media: msg.media || [] });
+        sendResponse({ ok: true });
         break;
       }
 

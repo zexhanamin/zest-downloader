@@ -7,13 +7,16 @@
     The renderer displays filenames and error strings that come from remote
     servers. This policy is the backstop behind escaping: no remote script,
     no eval, no network requests from the page beyond the font CDN.
+
+    img-src allows https so video thumbnails render. An image cannot execute,
+    and connect-src stays at 'none', so nothing can be sent back out.
   -->
   <meta http-equiv="Content-Security-Policy" content="
     default-src 'none';
     script-src 'self' 'unsafe-inline';
     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
     font-src 'self' https://fonts.gstatic.com;
-    img-src 'self' data:;
+    img-src 'self' data: https:;
     connect-src 'none';
     form-action 'none';
     base-uri 'none';
@@ -284,6 +287,109 @@
       padding: 8px 16px 0;
       flex-shrink: 0;
     }
+    /* ── Video panel ── */
+    #video-panel {
+      padding: 18px 20px 4px;
+      overflow-y: auto;
+    }
+    .vp-head { margin-bottom: 16px; }
+    .vp-title {
+      font-size: 15px; font-weight: 600; color: var(--text);
+      margin: 0 0 4px;
+    }
+    .vp-sub { font-size: 12.5px; color: var(--text-muted); margin: 0; line-height: 1.6; }
+    .vp-sub strong { color: var(--text-sec); font-weight: 500; }
+
+    .vp-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    .vp-card-title {
+      font-size: 12.5px; font-weight: 600; color: var(--text);
+      margin-bottom: 6px;
+    }
+    .vp-card-text {
+      font-size: 12.5px; line-height: 1.65; color: var(--text-muted);
+      margin: 0 0 12px;
+    }
+    .vp-card-text code {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 11px; color: var(--text-sec);
+      background: var(--bg-hover); padding: 1px 5px; border-radius: 4px;
+      word-break: break-all;
+    }
+    .vp-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .vp-row .field-input { flex: 1; }
+    .vp-hint {
+      font-size: 11.5px; color: var(--text-muted);
+      line-height: 1.5; min-height: 16px;
+    }
+    .vp-hint.error { color: #F46B6B; }
+    .vp-hint.ok    { color: #5BD98A; }
+    /* Version line: the note takes the room, the button sits at the end */
+    #vp-version-row { margin-top: 4px; }
+    #vp-version-row .vp-hint { flex: 1; }
+    #vp-version-row .btn { padding: 5px 11px; font-size: 12px; }
+
+    .vp-result-top { display: flex; gap: 12px; margin-bottom: 14px; }
+    .vp-thumb {
+      width: 132px; height: 74px; object-fit: cover;
+      border-radius: 6px; background: var(--bg-hover); flex-shrink: 0;
+    }
+    .vp-meta { min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+    .vp-name {
+      font-size: 13px; font-weight: 500; color: var(--text);
+      line-height: 1.4; margin-bottom: 4px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .vp-by { font-size: 11.5px; color: var(--text-muted); }
+    .vp-check {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12.5px; color: var(--text-sec);
+      cursor: pointer; margin-bottom: 8px;
+    }
+    .vp-check input { accent-color: var(--accent); cursor: pointer; }
+
+    .search-box {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0 6px 0 8px; height: 28px; min-width: 190px;
+      transition: border-color var(--trans), box-shadow var(--trans);
+    }
+    .search-box:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .search-box svg { width: 13px; height: 13px; color: var(--text-muted); flex-shrink: 0; }
+    .search-box input {
+      flex: 1; min-width: 0; border: none; background: transparent; outline: none;
+      font-family: var(--font-ui); font-size: 12px; color: var(--text);
+    }
+    .search-box input::placeholder { color: var(--text-muted); }
+    .search-clear {
+      border: none; background: transparent; cursor: pointer;
+      color: var(--text-muted); font-size: 15px; line-height: 1;
+      padding: 0 2px; display: none;
+    }
+    .search-clear:hover { color: var(--text); }
+    .search-box.has-text .search-clear { display: block; }
+
+    /* ── Confirm dialog ── */
+    .confirm-body {
+      font-size: 12.5px; line-height: 1.6; color: var(--text-muted);
+      word-break: break-word; margin: 0 0 4px;
+    }
+    .confirm-name {
+      font-size: 13px; color: var(--text); font-weight: 500;
+      word-break: break-all; margin-bottom: 10px;
+    }
+
     .filter-tab {
       border: none; background: transparent;
       font-family: var(--font-ui); font-size: 12px; font-weight: 500;
@@ -616,6 +722,12 @@
           <path d="M4.5 4.5a10 10 0 1 0 15 15"/>
         </svg>
       </button>
+      <button class="nav-btn" id="nav-video" data-tip="Video" onclick="setView('video')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="5" width="14" height="14" rx="2"/>
+          <path d="M16 10l6-3v10l-6-3z"/>
+        </svg>
+      </button>
       <button class="nav-btn" id="nav-completed" data-tip="Completed" onclick="setView('completed')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M20 6L9 17l-5-5"/>
@@ -695,13 +807,122 @@
         <button onclick="resetSaveFolder()" title="Reset to default">Reset</button>
       </div>
 
+      <!-- ── Video panel (shown only in the Video view) ── -->
+      <div id="video-panel" style="display:none">
+        <div class="vp-head">
+          <h2 class="vp-title">Video downloader</h2>
+          <p class="vp-sub">
+            Paste a link from
+            <strong id="vp-sites">YouTube, Instagram, TikTok</strong>
+            and pick a quality.
+          </p>
+        </div>
+
+        <!-- First-run: the helper has to be fetched before anything works -->
+        <div id="vp-helper" class="vp-card" style="display:none">
+          <div class="vp-card-title">One-time setup</div>
+          <p class="vp-card-text">
+            These sites stream video in pieces behind signed links, so Zest uses
+            <strong>yt-dlp</strong> to resolve them. It is a separate open-source
+            program, downloaded from its official GitHub release into
+            <code id="vp-helper-path"></code> and run only when you download a video.
+          </p>
+          <div class="vp-row">
+            <button class="btn btn-primary" id="vp-install-btn" onclick="installVideoHelper()">
+              Download helper (~17 MB)
+            </button>
+            <span class="vp-hint" id="vp-helper-status"></span>
+          </div>
+        </div>
+
+        <!-- ffmpeg unlocks the resolutions that arrive as separate streams -->
+        <div id="vp-ffmpeg" class="vp-card" style="display:none">
+          <div class="vp-card-title">Higher resolutions</div>
+          <p class="vp-card-text">
+            Above 720p, YouTube sends video and audio as separate streams that have
+            to be joined back together, and some videos have no combined stream at
+            all. That needs <strong>ffmpeg</strong>. Without it Zest only offers the
+            qualities that arrive in one piece.
+          </p>
+          <div class="vp-row">
+            <button class="btn btn-ghost" id="vp-ffmpeg-btn" onclick="installFfmpegHelper()">
+              Download ffmpeg (~80 MB)
+            </button>
+            <span class="vp-hint" id="vp-ffmpeg-status"></span>
+          </div>
+        </div>
+
+        <!-- deno unlocks the formats YouTube guards behind a challenge -->
+        <div id="vp-runtime" class="vp-card" style="display:none">
+          <div class="vp-card-title">Highest YouTube quality</div>
+          <p class="vp-card-text">
+            YouTube guards its stream URLs with a challenge that has to be executed.
+            Without a JavaScript runtime yt-dlp still works but reaches fewer formats —
+            in testing the same video stopped well short of its real resolution.
+            <strong>Deno</strong> is the runtime yt-dlp expects. The download is
+            about 41 MB and takes roughly 93 MB on disk once unpacked.
+          </p>
+          <div class="vp-row">
+            <button class="btn btn-ghost" id="vp-runtime-btn" onclick="installVideoRuntime()">
+              Download runtime (~41 MB)
+            </button>
+            <span class="vp-hint" id="vp-runtime-status"></span>
+          </div>
+        </div>
+
+        <!-- Paste a link -->
+        <div id="vp-input-row" class="vp-row">
+          <input type="text" class="field-input" id="vp-url"
+                 placeholder="https://www.youtube.com/watch?v=…" spellcheck="false" />
+          <button class="btn btn-primary" id="vp-fetch-btn" onclick="fetchVideoInfo()">Fetch</button>
+        </div>
+        <div class="vp-hint" id="vp-msg"></div>
+
+        <!-- Result -->
+        <div id="vp-result" class="vp-card" style="display:none">
+          <div class="vp-result-top">
+            <img id="vp-thumb" class="vp-thumb" alt="" />
+            <div class="vp-meta">
+              <div class="vp-name" id="vp-title"></div>
+              <div class="vp-by" id="vp-by"></div>
+            </div>
+          </div>
+          <div class="vp-row">
+            <select class="field-input" id="vp-quality" style="max-width:230px"></select>
+            <button class="btn btn-primary" onclick="startVideoDownload()">Download</button>
+          </div>
+          <label class="vp-check" id="vp-playlist-row" style="display:none">
+            <input type="checkbox" id="vp-playlist" />
+            <span id="vp-playlist-label"></span>
+          </label>
+          <div class="vp-hint" id="vp-quality-note"></div>
+        </div>
+
+        <!-- The helper goes stale on its own, so say plainly that it is looked after -->
+        <div class="vp-row" id="vp-version-row" style="display:none">
+          <span class="vp-hint" id="vp-version"></span>
+          <button class="btn btn-ghost" id="vp-update-btn" onclick="updateVideoHelper()">
+            Check for updates
+          </button>
+        </div>
+      </div>
+
       <!-- Filter bar -->
       <div id="filter-bar">
         <button class="filter-tab active" onclick="setFilter('all',this)">All</button>
         <button class="filter-tab" onclick="setFilter('downloading',this)">Active</button>
         <button class="filter-tab" onclick="setFilter('paused',this)">Paused</button>
+        <button class="filter-tab" onclick="setFilter('unfinished',this)">Unfinished</button>
         <button class="filter-tab" onclick="setFilter('done',this)">Done</button>
         <div class="filter-spacer"></div>
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.6" y2="16.6"/>
+          </svg>
+          <input type="text" id="search-input" placeholder="Search downloads…" spellcheck="false" />
+          <button class="search-clear" id="search-clear" title="Clear" onclick="clearSearch()">×</button>
+        </div>
         <button class="clear-btn" onclick="clearFinished()">Clear finished</button>
       </div>
 
@@ -826,6 +1047,32 @@
   </div>
 </div>
 
+<!-- ═══════ CONFIRM DIALOG ═══════ -->
+<div class="modal-backdrop" id="confirm-modal">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-header">
+      <span class="modal-title" id="confirm-title">Remove this download?</span>
+      <button class="modal-close" onclick="closeConfirm()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="confirm-name" id="confirm-name"></div>
+      <p class="confirm-body">
+        Removing it clears the entry from this list. The downloaded file stays
+        on disk unless you ask for it to go as well — that cannot be undone.
+      </p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeConfirm()">Cancel</button>
+      <button class="btn btn-ghost" id="confirm-record">Remove from list</button>
+      <button class="btn btn-primary" id="confirm-file">Remove and delete file</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════ TOAST CONTAINER ═══════ -->
 <div class="toast-container" id="toasts"></div>
 
@@ -843,6 +1090,8 @@ function toggleTheme() {
   document.getElementById('icon-sun').style.display  = dark ? 'block' : 'none';
   document.getElementById('icon-moon').style.display = dark ? 'none'  : 'block';
   localStorage.setItem('zest-theme', html.dataset.theme);
+  // The popup is a separate window, so it has to be told
+  window.zest?.popupTheme(html.dataset.theme);
 }
 (function(){
   const t = localStorage.getItem('zest-theme');
@@ -856,11 +1105,24 @@ function toggleTheme() {
 })();
 
 // Nav view
+const VIEW_TITLES = {
+  downloads: 'Downloads',
+  torrents:  'Torrents',
+  video:     'Video',
+  completed: 'Completed',
+};
+
 function setView(view) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('nav-' + view)?.classList.add('active');
-  document.getElementById('topbar-title').textContent =
-    view === 'downloads' ? 'Downloads' : view === 'torrents' ? 'Torrents' : 'Completed';
+  document.getElementById('topbar-title').textContent = VIEW_TITLES[view] || 'Downloads';
+
+  // The Video view puts a paste box above the list rather than replacing it —
+  // a video that is downloading has to stay visible from the tab that started it.
+  const isVideo = view === 'video';
+  document.getElementById('video-panel').style.display = isVideo ? '' : 'none';
+  document.getElementById('filter-bar').style.display  = isVideo ? 'none' : '';
+  if (isVideo) refreshVideoHelper();
   // Switching view resets the status tabs, so put "All" back in sync
   document.querySelectorAll('.filter-tab').forEach((b, i) => {
     b.classList.toggle('active', i === 0);
@@ -981,6 +1243,278 @@ async function openDownloadsFolder() {
   const res = await window.zest?.openDownloadDir(dir);
   if (res?.error) showToast(res.error, 'error');
 }
+
+// ── Confirm dialog ──
+let _confirmChoice = null;
+
+function closeConfirm() {
+  document.getElementById('confirm-modal').classList.remove('open');
+  _confirmChoice = null;
+}
+
+/** Ask before removing, and keep deleting the file a separate deliberate choice */
+window.showConfirm = ({ title, body, onlyRecord, alsoFile }) => {
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-name').textContent = body;
+  _confirmChoice = { onlyRecord, alsoFile };
+  document.getElementById('confirm-modal').classList.add('open');
+};
+
+document.getElementById('confirm-record').addEventListener('click', () => {
+  const fn = _confirmChoice?.onlyRecord;
+  closeConfirm();
+  fn?.();
+});
+document.getElementById('confirm-file').addEventListener('click', () => {
+  const fn = _confirmChoice?.alsoFile;
+  closeConfirm();
+  fn?.();
+});
+document.getElementById('confirm-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeConfirm();
+});
+
+// ── Search ──
+function clearSearch() {
+  const input = document.getElementById('search-input');
+  input.value = '';
+  input.closest('.search-box').classList.remove('has-text');
+  window.applySearch?.('');
+  input.focus();
+}
+
+document.getElementById('search-input').addEventListener('input', (e) => {
+  const v = e.target.value;
+  e.target.closest('.search-box').classList.toggle('has-text', v.length > 0);
+  window.applySearch?.(v);
+});
+
+document.getElementById('search-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') clearSearch();
+});
+
+// ── Video downloader ──
+let _videoInfo = null;
+
+function vpMsg(text, kind = '') {
+  const el = document.getElementById('vp-msg');
+  el.textContent = text;
+  el.className = `vp-hint ${kind}`;
+}
+
+/** Show or hide the one-time helper setup card */
+async function refreshVideoHelper() {
+  const st = await window.zest?.mediaHelperStatus();
+  if (!st) return;
+
+  document.getElementById('vp-sites').textContent = (st.sites || []).join(', ');
+  document.getElementById('vp-helper-path').textContent = st.path || '';
+  document.getElementById('vp-helper').style.display = st.installed ? 'none' : '';
+  document.getElementById('vp-input-row').style.display = st.installed ? 'flex' : 'none';
+
+  // Above 720p YouTube ships video and audio separately, and merging needs
+  // ffmpeg. Say so up front instead of quietly capping the quality.
+  document.getElementById('vp-ffmpeg').style.display =
+    (st.installed && !st.ffmpeg) ? '' : 'none';
+  document.getElementById('vp-runtime').style.display =
+    (st.installed && !st.runtime) ? '' : 'none';
+  document.getElementById('vp-quality-note').textContent = st.ffmpeg
+    ? ''
+    : 'Without ffmpeg, only qualities that arrive as a single stream will work.';
+
+  document.getElementById('vp-version-row').style.display = st.installed ? 'flex' : 'none';
+  if (st.installed) {
+    document.getElementById('vp-version').textContent =
+      `yt-dlp ${st.version || 'unknown'}` +
+      (st.autoUpdate
+        ? ` · updates itself${st.checkedAt ? `, last checked ${agoLabel(st.checkedAt)}` : ''}`
+        : ' · automatic updates are off');
+  }
+  return st;
+}
+
+/** "3 hours ago", for a timestamp nobody needs to the second */
+function agoLabel(ts) {
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (mins < 1)   return 'just now';
+  if (mins < 60)  return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+/**
+ * Check for a newer yt-dlp on demand.
+ *
+ * It happens on its own once a day; this is for the moment a site breaks and
+ * waiting until tomorrow is not an answer.
+ */
+async function updateVideoHelper() {
+  const btn = document.getElementById('vp-update-btn');
+  const line = document.getElementById('vp-version');
+  btn.disabled = true;
+  line.textContent = 'Checking…';
+
+  const res = await window.zest?.mediaUpdateHelper();
+  btn.disabled = false;
+
+  if (res?.updated)                    showToast(`Updated to yt-dlp ${res.current}`, 'success');
+  else if (res?.reason === 'current')  showToast('yt-dlp is already up to date', 'success');
+  else if (res?.reason === 'busy')     showToast('Finish the running video downloads first', 'error');
+  else if (res?.reason === 'unreachable') showToast('Could not reach GitHub to check', 'error');
+  else if (res?.error)                 showToast(res.error, 'error');
+
+  refreshVideoHelper();
+}
+
+async function installVideoRuntime() {
+  const btn = document.getElementById('vp-runtime-btn');
+  const status = document.getElementById('vp-runtime-status');
+  btn.disabled = true;
+  status.textContent = 'Downloading…';
+
+  const off = window.zest?.on('media:helperProgress', ({ received, total }) => {
+    status.textContent = total
+      ? `Downloading… ${Math.round((received / total) * 100)}%`
+      : 'Downloading…';
+  });
+
+  const res = await window.zest?.mediaInstallRuntime();
+  off?.();
+  btn.disabled = false;
+  status.textContent = '';
+
+  if (res?.error) { showToast(res.error, 'error'); return; }
+  showToast('Runtime installed — highest qualities available', 'success');
+  refreshVideoHelper();
+}
+
+async function installFfmpegHelper() {
+  const btn = document.getElementById('vp-ffmpeg-btn');
+  const status = document.getElementById('vp-ffmpeg-status');
+  btn.disabled = true;
+  status.textContent = 'Downloading…';
+
+  const off = window.zest?.on('media:helperProgress', ({ received, total }) => {
+    status.textContent = total
+      ? `Downloading… ${Math.round((received / total) * 100)}%`
+      : 'Downloading…';
+  });
+
+  const res = await window.zest?.mediaInstallFfmpeg();
+  off?.();
+  btn.disabled = false;
+  status.textContent = '';
+
+  if (res?.error) { showToast(res.error, 'error'); return; }
+  showToast('ffmpeg installed — all resolutions available', 'success');
+  refreshVideoHelper();
+}
+
+async function installVideoHelper() {
+  const btn = document.getElementById('vp-install-btn');
+  const status = document.getElementById('vp-helper-status');
+  btn.disabled = true;
+  status.textContent = 'Downloading…';
+
+  const off = window.zest?.on('media:helperProgress', ({ received, total }) => {
+    status.textContent = total
+      ? `Downloading… ${Math.round((received / total) * 100)}%`
+      : 'Downloading…';
+  });
+
+  const res = await window.zest?.mediaInstallHelper();
+  off?.();
+  btn.disabled = false;
+
+  if (res?.error) {
+    status.textContent = '';
+    showToast(res.error, 'error');
+    return;
+  }
+  status.textContent = '';
+  showToast(`Helper installed (yt-dlp ${res.version})`, 'success');
+  refreshVideoHelper();
+}
+
+async function fetchVideoInfo() {
+  const url = document.getElementById('vp-url').value.trim();
+  if (!url) return;
+
+  const btn = document.getElementById('vp-fetch-btn');
+  document.getElementById('vp-result').style.display = 'none';
+  btn.disabled = true;
+  vpMsg('Reading the page…');
+
+  const res = await window.zest?.mediaProbe(url);
+  btn.disabled = false;
+
+  if (res?.error === 'helper-missing') {
+    vpMsg('');
+    refreshVideoHelper();
+    return;
+  }
+  if (res?.error) { vpMsg(res.error, 'error'); return; }
+
+  _videoInfo = res.info;
+  vpMsg('');
+
+  document.getElementById('vp-title').textContent = res.info.title;
+  document.getElementById('vp-by').textContent =
+    [res.info.site, res.info.uploader].filter(Boolean).join(' · ');
+
+  const thumb = document.getElementById('vp-thumb');
+  if (res.info.thumbnail) { thumb.src = res.info.thumbnail; thumb.style.display = ''; }
+  else thumb.style.display = 'none';
+
+  const sel = document.getElementById('vp-quality');
+  sel.textContent = '';
+  (res.info.qualities || []).forEach((q, i) => {
+    const opt = document.createElement('option');
+    opt.value = q.id;
+    opt.textContent = q.label;
+    if (i === 0) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  // A link copied from inside a playlist carries ?list=. Offer the whole
+  // playlist, but never assume it — the user clicked one video.
+  const pl = res.info.playlist;
+  const row = document.getElementById('vp-playlist-row');
+  const box = document.getElementById('vp-playlist');
+  box.checked = false;
+  if (pl && pl.count > 1) {
+    document.getElementById('vp-playlist-label').textContent =
+      `Download the whole playlist — ${pl.count} videos from "${pl.title}"`;
+    row.style.display = '';
+  } else {
+    row.style.display = 'none';
+  }
+
+  document.getElementById('vp-result').style.display = '';
+}
+
+async function startVideoDownload() {
+  if (!_videoInfo) return;
+  const url = document.getElementById('vp-url').value.trim();
+  const quality = document.getElementById('vp-quality').value;
+
+  const playlist = document.getElementById('vp-playlist').checked;
+
+  const res = await window.zest?.mediaAdd(url, _customSavePath, quality, playlist);
+  if (res?.error) { showToast(res.error, 'error'); return; }
+
+  showToast(playlist ? 'Playlist queued' : 'Video queued', 'success');
+  document.getElementById('vp-result').style.display = 'none';
+  document.getElementById('vp-url').value = '';
+  _videoInfo = null;
+  window.loadQueue?.();
+}
+
+document.getElementById('vp-url').addEventListener('keydown', e => {
+  if (e.key === 'Enter') fetchVideoInfo();
+});
 
 // ── Browser extension setup ──
 async function openExtensionSetup() {
