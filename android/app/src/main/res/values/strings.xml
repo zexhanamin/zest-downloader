@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Zest</string>
+    <string name="share_label">Download with Zest</string>
+    <string name="bubble_summary">A small download button on the edge of the screen in video apps and browsers</string>
+    <string name="bubble_description">"Zest's floating download button. While YouTube, Instagram, TikTok or a browser is open, a small tab rests on the edge of the screen: touch it once to bring it out, again to download the video on screen. Zest uses this permission only to see which app is open, to read a browser's address bar, and to press that app's Share button for you. It reads nothing else and keeps nothing."</string>
+</resources>

@@ -1,0 +1,13 @@
+# Toolchain (JDK, Android SDK, Gradle) downloaded locally — gigabytes, never commit
+.toolchain/
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+# Release signing — back this up somewhere safe, never commit it
+keystore/
+
+# Built APKs — they go to GitHub Releases, not into git
+release/

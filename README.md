@@ -4,6 +4,11 @@ A download manager for Windows, built with Electron. HTTP multi-chunk
 downloading with real pause/resume, BitTorrent support, a dark/light UI, and a
 Chrome extension that hands downloads over from the browser.
 
+There is an **Android version** too, in [`android/`](android/): the same
+multi-connection engine and video downloads, Share → Zest from any app, a
+built-in browser, and a floating download button for the video on screen.
+APKs are on the [Releases](https://github.com/zexhanamin/zest-downloader/releases) page.
+
 > **Status: pre-release.** The download engine is covered by tests and works,
 > but the app has not been through wide real-world testing yet. Expect rough
 > edges, and please open an issue when you hit one.
