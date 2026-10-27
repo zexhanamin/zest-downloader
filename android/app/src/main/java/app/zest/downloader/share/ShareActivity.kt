@@ -1,6 +1,5 @@
 package app.zest.downloader.share
 
-import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
@@ -22,37 +21,21 @@ import app.zest.downloader.ui.ZestTheme
  * Either way you never leave what you were doing.
  */
 class ShareActivity : ComponentActivity() {
-    private var waitingForClipboard = false
-
+    @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // From the floating button: the link was just copied, and the clipboard opens only once this window has focus
-        if (intent?.getBooleanExtra(EXTRA_FROM_CLIPBOARD, false) == true) { waitingForClipboard = true; return }
-        go(null)
-    }
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus || !waitingForClipboard) return
-        waitingForClipboard = false
-        val text = runCatching { getSystemService(ClipboardManager::class.java).primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() }.getOrNull()
-        go(Sites.firstUrl(text) ?: "")
-    }
-
-    @OptIn(ExperimentalMaterial3Api::class)
-    private fun go(fromClipboard: String?) {
         val app = ZestApp.of(this)
-        val url = if (fromClipboard != null) fromClipboard.ifEmpty { null } else when (intent?.action) {
+        val url = when (intent?.action) {
             Intent.ACTION_SEND -> Sites.firstUrl(intent.getStringExtra(Intent.EXTRA_TEXT)) ?: Sites.firstUrl(intent.getStringExtra(Intent.EXTRA_SUBJECT))
             Intent.ACTION_VIEW -> intent.dataString
             else -> null
         }
         if (url == null) {
-            Toast.makeText(this, if (fromClipboard != null) "No video link found to download" else "No link to download in what was shared", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No link to download in what was shared", Toast.LENGTH_SHORT).show()
             finish(); return
         }
         // "Open with Zest" on a file link: nothing to choose, so don't ask
-        if (intent?.action == Intent.ACTION_VIEW && !Sites.isMedia(url)) {
+        if (intent.action == Intent.ACTION_VIEW && !Sites.isMedia(url)) {
             app.enqueue(url, forceFile = true)
             Toast.makeText(this, "Downloading in Zest", Toast.LENGTH_SHORT).show()
             finish(); return
@@ -68,9 +51,5 @@ class ShareActivity : ComponentActivity() {
                 }
             }
         }
-    }
-
-    companion object {
-        const val EXTRA_FROM_CLIPBOARD = "app.zest.downloader.FROM_CLIPBOARD"
     }
 }

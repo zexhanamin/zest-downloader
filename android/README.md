@@ -15,31 +15,14 @@ Kotlin + Jetpack Compose, `minSdk 26` (Android 8), `targetSdk 35`.
 | Zest's browser tab | Every file download is caught; videos get a **Download** button on the player |
 | Anywhere | Copy a link, open Zest — it offers to download it |
 | File links | "Open with Zest" starts the download directly |
-| YouTube, Instagram, TikTok, Facebook, X, Reddit, browsers | The **floating download button** on the screen's edge (below) |
 
-## The floating download button
+Android does not let one app draw buttons inside another app, and mobile
+Chrome runs no extensions — so the share sheet and the built-in browser are
+how this works on a phone.
 
-While a video app or a browser is open, a small Zest tab rests on the edge of
-the screen. Touch it once and it slides out; touch it again and the quality
-picker opens for the video on screen. It tucks itself back after a few
-seconds, and can be dragged up and down.
-
-- **In a browser** it reads the address bar.
-- **In an app** it presses the app's own Share button, then picks Zest in the
-  share sheet: directly if Zest is listed, otherwise through "Copy link"
-  (Zest reads the link once its sheet is in front), otherwise through "More".
-
-Turn it on or off in **Settings → Floating download button**. It runs as an
-Android accessibility service, which the user has to switch on themselves in
-Accessibility → Installed apps → Zest; Android does not let an app do that on
-its own. Zest uses that permission only to see which app is in front, to read
-a browser's address bar, and to press that app's Share and Copy link buttons.
-It reads nothing else and keeps nothing. On Android 13 and later, a sideloaded
-app's accessibility switch can be greyed out until App info → ⋮ → **Allow
-restricted settings**.
-
-Mobile Chrome runs no extensions, so this button, the share sheet and the
-built-in browser are how Zest reaches videos on a phone.
+Zest asks for no sensitive permissions — no Accessibility, SMS or
+notification access — so Google Play Protect lets it install from a browser
+or file manager everywhere.
 
 ## Building
 

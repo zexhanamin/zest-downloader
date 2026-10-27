@@ -1,7 +1,6 @@
 package app.zest.downloader.ui
 
 import android.content.Intent
-import android.provider.Settings as SysSettings
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -38,11 +37,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LifecycleEventEffect
 import app.zest.downloader.BuildConfig
 import app.zest.downloader.ZestApp
-import app.zest.downloader.bubble.BubbleService
 import app.zest.downloader.data.ThemeMode
 import app.zest.downloader.engine.Files
 import app.zest.downloader.engine.Sites
@@ -60,9 +56,6 @@ fun SettingsScreen(contentPadding: PaddingValues) {
     var updating by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { ytdlp = withContext(Dispatchers.IO) { runCatching { app.media.ensureReady(); app.media.version() }.getOrNull() } }
-    // Coming back from Android's Accessibility settings is when the answer changes
-    var bubbleOn by remember { mutableStateOf(BubbleService.isOn(ctx)) }
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { bubbleOn = BubbleService.isOn(ctx) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)
         .padding(top = contentPadding.calculateTopPadding() + 8.dp, bottom = contentPadding.calculateBottomPadding() + 24.dp),
@@ -86,17 +79,6 @@ fun SettingsScreen(contentPadding: PaddingValues) {
             Slider(p.parallel.toFloat(), { v -> app.settings.set { it.copy(parallel = v.toInt()) } }, valueRange = 1f..5f, steps = 3)
             Toggle("Only on Wi-Fi", "Wait for Wi-Fi before starting, to save mobile data", p.wifiOnly) { v -> app.settings.set { it.copy(wifiOnly = v) } }
             Hint("Files are saved to Downloads/${Files.FOLDER}.")
-        }
-
-        Group("Floating download button") {
-            Toggle("Show on the screen's edge", "In YouTube, Instagram, TikTok and browsers. Touch the tab to bring it out, touch again to download the video on screen.",
-                p.floatingButton && bubbleOn) { v ->
-                app.settings.set { it.copy(floatingButton = v) }
-                // Android only lets the user grant this themselves, on its own settings page
-                if (v && !bubbleOn) ctx.startActivity(Intent(SysSettings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            }
-            if (p.floatingButton && !bubbleOn) Hint("Needs one permission: in Accessibility → Installed apps, turn on Zest. (On Android 13 and later, if it is greyed out: App info → ⋮ → Allow restricted settings first.)")
-            else Hint("Uses Accessibility only to see which app is open and to press its Share button for you. Nothing is read or kept.")
         }
 
         Group("Video engine") {

@@ -19,10 +19,6 @@ data class Prefs(
     val ytDlpCheckedAt: Long = 0,
     /** Last clipboard link offered, so the same one is not offered twice */
     val lastClipOffer: String = "",
-    /** The floating download button (also needs Zest switched on in Accessibility) */
-    val floatingButton: Boolean = true,
-    /** Where the user dragged the floating button to; -1 until they do */
-    val bubbleY: Int = -1,
 )
 
 class Settings(context: Context) {
@@ -39,8 +35,6 @@ class Settings(context: Context) {
         autoUpdateYtDlp = sp.getBoolean("autoUpdateYtDlp", true),
         ytDlpCheckedAt = sp.getLong("ytDlpCheckedAt", 0),
         lastClipOffer = sp.getString("lastClipOffer", "") ?: "",
-        floatingButton = sp.getBoolean("floatingButton", true),
-        bubbleY = sp.getInt("bubbleY", -1),
     )
 
     fun set(f: (Prefs) -> Prefs) {
@@ -53,8 +47,6 @@ class Settings(context: Context) {
             putBoolean("autoUpdateYtDlp", p.autoUpdateYtDlp)
             putLong("ytDlpCheckedAt", p.ytDlpCheckedAt)
             putString("lastClipOffer", p.lastClipOffer)
-            putBoolean("floatingButton", p.floatingButton)
-            putInt("bubbleY", p.bubbleY)
         }
         _prefs.value = p
     }
